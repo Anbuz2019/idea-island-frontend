@@ -1,0 +1,2984 @@
+﻿import {
+  Archive,
+  BarChart3,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Edit3,
+  Inbox,
+  LogOut,
+  Mail,
+  MessageCircle,
+  Plus,
+  RotateCcw,
+  Search,
+  Settings,
+  Shield,
+  Tags,
+  Trash2,
+  User,
+  X,
+} from 'lucide-react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent as ReactClipboardEvent,
+  type FormEvent,
+  type ReactNode,
+  type UIEvent,
+} from 'react';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
+import { queryKeys } from '../../shared/api/queryKeys';
+import {
+  clampText,
+  materialTypeLabels,
+  scoreTone,
+  shortDate,
+  statusLabels,
+} from '../../shared/utils/format';
+import {
+  DEFAULT_THEME_COLOR,
+  readStoredAppearanceMode,
+  readStoredThemeColor,
+  saveAppearanceMode,
+  saveThemeColor,
+  type AppearanceMode,
+} from '../../shared/theme/themeColor';
+import { workspaceApi } from './api';
+import { authApi } from './authApi';
+import type {
+  Material,
+  MaterialListParams,
+  MaterialStatus,
+  MaterialTag,
+  MaterialType,
+  PageResponse,
+  SubmitMaterialPayload,
+  TagGroup,
+  TagValue,
+  Topic,
+  UpdateMaterialPayload,
+  ViewKey,
+} from './types';
+
+const pageSize = 8;
+const workspacePrefsStorageKey = 'idea-island-workspace-prefs';
+const readMaterialsStorageKey = 'idea-island-read-materials';
+
+const materialTypes: MaterialType[] = ['article', 'social', 'media', 'image', 'excerpt', 'input'];
+
+const themePresets = [
+  { name: '岛屿绿', color: DEFAULT_THEME_COLOR },
+  { name: '海蓝', color: '#2563eb' },
+  { name: '青蓝', color: '#0891b2' },
+  { name: '紫罗兰', color: '#7c3aed' },
+  { name: '玫红', color: '#be123c' },
+];
+
+const viewLabels: Record<ViewKey, string> = {
+  inbox: '收件箱',
+  library: '资料库',
+  invalid: '失效资料',
+  search: '搜索',
+  topicSettings: '主题设置',
+  stats: '统计',
+  assistant: '灵感助手',
+  profile: '个人中心',
+};
+
+const viewDescriptions: Record<ViewKey, string> = {
+  inbox: '处理刚采集、尚未完成整理的资料。',
+  library: '回看已收录和已归档资料，用于检索和沉淀。',
+  invalid: '查找已标记失效的资料，可按需恢复到收件箱。',
+  search: '在当前主题内按状态、类型、标签和正文快速定位资料。',
+  topicSettings: '设置主题之下的标签组和标签。',
+  stats: '查看全局资料沉淀、处理效率和主题分布。',
+  assistant: '围绕资料和主题进行 AI 对话整理。',
+  profile: '管理个人资料、会员状态和外观偏好。',
+};
+
+const viewPaths: Record<ViewKey, string> = {
+  inbox: '/app/inbox',
+  library: '/app/library',
+  invalid: '/app/invalid',
+  search: '/app/search',
+  topicSettings: '/app/topics/settings',
+  stats: '/app/stats',
+  assistant: '/app/assistant',
+  profile: '/app/profile',
+};
+
+type WorkspaceFilterPrefs = {
+  keyword?: string;
+  sortBy?: 'createdAt' | 'score' | 'statusAt';
+  statusFilter?: MaterialStatus[];
+  typeFilter?: MaterialType[];
+  tagFilters?: Record<string, string[]>;
+  unreadOnly?: boolean;
+};
+
+type WorkspacePrefs = {
+  schemaVersion?: number;
+  activeView?: ViewKey;
+  activeTopicId?: number;
+  selectedMaterialId?: number;
+  topicNavCollapsed?: boolean;
+  filters?: Record<string, WorkspaceFilterPrefs>;
+};
+
+function readWorkspacePrefs(): WorkspacePrefs {
+  try {
+    const raw = localStorage.getItem(workspacePrefsStorageKey);
+    return raw ? JSON.parse(raw) as WorkspacePrefs : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveWorkspacePrefs(update: (current: WorkspacePrefs) => WorkspacePrefs) {
+  try {
+    localStorage.setItem(workspacePrefsStorageKey, JSON.stringify({ ...update(readWorkspacePrefs()), schemaVersion: 2 }));
+  } catch {
+    // Ignore storage failures; the workspace should remain usable.
+  }
+}
+
+function workspaceFilterKey(view: ViewKey, topicId?: number) {
+  return `${view}:${topicId ?? 'all'}`;
+}
+
+function shortTopicName(name?: string) {
+  if (!name) return '';
+  const chars = Array.from(name);
+  return chars.length > 5 ? `${chars.slice(0, 5).join('')}...` : name;
+}
+
+function savedWorkspaceView() {
+  const view = readWorkspacePrefs().activeView;
+  return view && viewPaths[view] ? view : undefined;
+}
+
+type ReadMaterialRegistry = Record<string, true>;
+
+function readMaterialRegistry(): ReadMaterialRegistry {
+  try {
+    const raw = localStorage.getItem(readMaterialsStorageKey);
+    return raw ? JSON.parse(raw) as ReadMaterialRegistry : {};
+  } catch {
+    return {};
+  }
+}
+
+function statusEnteredAt(material: Material) {
+  if (material.status === 'INBOX') return material.inboxAt || material.createdAt;
+  if (material.status === 'PENDING_REVIEW') return material.updatedAt || material.createdAt;
+  if (material.status === 'COLLECTED') return material.collectedAt || material.updatedAt || material.createdAt;
+  if (material.status === 'ARCHIVED') return material.archivedAt || material.updatedAt || material.createdAt;
+  if (material.status === 'INVALID') return material.invalidAt || material.updatedAt || material.createdAt;
+  return material.updatedAt || material.createdAt;
+}
+
+function materialReadKey(material: Material) {
+  return `${material.id}:${material.status}:${statusEnteredAt(material)}`;
+}
+
+function canBeUnread(material: Material) {
+  return material.status === 'INBOX' || material.status === 'COLLECTED';
+}
+
+function isMaterialUnread(material: Material, readRegistry: ReadMaterialRegistry) {
+  return canBeUnread(material) && !readRegistry[materialReadKey(material)];
+}
+
+function viewFromPath(pathname: string): ViewKey {
+  if (pathname.includes('/library')) return 'library';
+  if (pathname.includes('/invalid')) return 'invalid';
+  if (pathname.includes('/search')) return 'search';
+  if (pathname.includes('/topics/settings')) return 'topicSettings';
+  if (pathname.includes('/stats')) return 'stats';
+  if (pathname.includes('/assistant')) return 'assistant';
+  if (pathname.includes('/profile')) return 'profile';
+  return 'inbox';
+}
+
+function rgba(hex: string, alpha: number) {
+  const normalized = hex.replace('#', '');
+  const value = normalized.length === 3
+    ? normalized.split('').map((part) => part + part).join('')
+    : normalized;
+  const numeric = Number.parseInt(value, 16);
+  const r = (numeric >> 16) & 255;
+  const g = (numeric >> 8) & 255;
+  const b = numeric & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function tagStyle(group?: TagGroup) {
+  if (!group?.color) {
+    return {
+      '--tag-fg': 'var(--theme)',
+      '--tag-bg': 'rgba(var(--theme-rgb), 0.045)',
+      '--tag-border': 'rgba(var(--theme-rgb), 0.15)',
+    } as React.CSSProperties;
+  }
+  const color = group.color;
+  return {
+    '--tag-fg': color,
+    '--tag-bg': rgba(color, 0.045),
+    '--tag-border': rgba(color, 0.15),
+  } as React.CSSProperties;
+}
+
+function groupForTag(tag: MaterialTag, groups: TagGroup[]) {
+  return groups.find((group) => String(group.id) === tag.tagGroupKey);
+}
+
+function materialTagsForGroups(material: Material, groups: TagGroup[]) {
+  return material.tags.filter((tag) => groups.some((group) => String(group.id) === tag.tagGroupKey));
+}
+
+function materialCoverKey(material: Material) {
+  return material.materialType === 'image'
+    ? material.fileKey || material.meta.thumbnailKey
+    : material.meta.thumbnailKey;
+}
+
+function flattenPages<T>(data?: { pages: PageResponse<T>[] }) {
+  return data?.pages.flatMap((page) => page.items) ?? [];
+}
+
+function errorMessage(error: unknown) {
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message: string }).message);
+  }
+  return '操作失败';
+}
+
+type TopicSidebarCount = {
+  inbox: number;
+  library: number;
+  total: number;
+  unreadInbox: number;
+  unreadLibrary: number;
+};
+
+type NotifySuccess = (text: string) => void;
+
+function useCoverTone(imageUrl?: string) {
+  const [tone, setTone] = useState<'dark' | 'light'>('dark');
+
+  useEffect(() => {
+    if (!imageUrl) {
+      setTone('dark');
+      return;
+    }
+
+    let cancelled = false;
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const width = 24;
+        const height = 24;
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        if (!context) return;
+        context.drawImage(image, 0, 0, width, height);
+        const pixels = context.getImageData(0, 0, width, height).data;
+        let total = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          total += 0.2126 * pixels[index] + 0.7152 * pixels[index + 1] + 0.0722 * pixels[index + 2];
+        }
+        const luminance = total / (pixels.length / 4);
+        if (!cancelled) setTone(luminance > 150 ? 'light' : 'dark');
+      } catch {
+        if (!cancelled) setTone('dark');
+      }
+    };
+    image.onerror = () => {
+      if (!cancelled) setTone('dark');
+    };
+    image.src = imageUrl;
+
+    return () => {
+      cancelled = true;
+    };
+  }, [imageUrl]);
+
+  return tone;
+}
+
+function LoginPage({ onLogin }: { onLogin: () => void }) {
+  const [mode, setMode] = useState<'email' | 'phone'>('email');
+  const [account, setAccount] = useState('demo@ideaisland.dev');
+  const [password, setPassword] = useState('demo123456');
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    onLogin();
+  };
+
+  return (
+    <main className="login-page">
+      <section className="login-visual">
+        <div className="brand login-brand">
+          <div className="brand-mark">II</div>
+          <div>
+            <strong>Idea Island</strong>
+            <span>碎片灵感工作台</span>
+          </div>
+        </div>
+        <div className="login-copy">
+          <h1>快速采集，结构化整理，高效率找回。</h1>
+          <p>把碎片资料先收进来，再围绕主题、标签组和状态完成沉淀。</p>
+        </div>
+      </section>
+
+      <section className="login-card">
+        <div>
+          <h2>登录</h2>
+          <p className="subtitle">当前默认使用 mock 登录，后续可直接接入认证接口。</p>
+        </div>
+
+        <div className="capture-tabs" style={{ gridTemplateColumns: '1fr 1fr' }}>
+          <button className={`capture-tab ${mode === 'email' ? 'active' : ''}`} onClick={() => setMode('email')} type="button">
+            <Mail size={16} /> 邮箱
+          </button>
+          <button className={`capture-tab ${mode === 'phone' ? 'active' : ''}`} onClick={() => setMode('phone')} type="button">
+            <Shield size={16} /> 手机验证码
+          </button>
+        </div>
+
+        <form className="form-grid" onSubmit={submit}>
+          <label className="form-row">
+            <span className="field-label">{mode === 'email' ? '邮箱' : '手机号'}</span>
+            <input
+              className="input"
+              value={account}
+              onChange={(event) => setAccount(event.target.value)}
+              placeholder={mode === 'email' ? 'name@example.com' : '手机号'}
+            />
+          </label>
+          <label className="form-row">
+            <span className="field-label">{mode === 'email' ? '密码' : '验证码'}</span>
+            <input
+              className="input"
+              type={mode === 'email' ? 'password' : 'text'}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder={mode === 'email' ? '密码' : '验证码'}
+            />
+          </label>
+          <button className="btn primary" type="submit">进入工作台</button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function AuthLoginPage({ onLogin }: { onLogin: (token: string, nickname?: string) => void }) {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [account, setAccount] = useState('');
+  const [password, setPassword] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [message, setMessage] = useState('');
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (mode === 'register') {
+        const result = await authApi.register({ email: account, password, nickname });
+        return { token: result.token, nickname };
+      }
+      const result = await authApi.login({ email: account, password });
+      return { token: result.token, nickname: result.nickname };
+    },
+    onSuccess: (result) => onLogin(result.token, result.nickname),
+    onError: (error) => setMessage(errorMessage(error)),
+  });
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    setMessage('');
+    mutation.mutate();
+  };
+
+  return (
+    <main className="login-page">
+      <section className="login-visual">
+        <div className="brand login-brand">
+          <div className="brand-mark">II</div>
+          <div>
+            <strong>Idea Island</strong>
+            <span>碎片灵感工作台</span>
+          </div>
+        </div>
+        <div className="login-copy">
+          <h1>快速采集，结构化整理，高效率找回。</h1>
+          <p>把碎片资料先收进来，再围绕主题、标签组和状态完成沉淀。</p>
+        </div>
+      </section>
+
+      <section className="login-card">
+        <div>
+          <h2>{mode === 'register' ? '注册' : '登录'}</h2>
+          <p className="subtitle">连接本地后端服务，登录后进入真实接口联调环境。</p>
+        </div>
+
+        <div className="capture-tabs" style={{ gridTemplateColumns: '1fr 1fr' }}>
+          <button className={`capture-tab ${mode === 'login' ? 'active' : ''}`} onClick={() => setMode('login')} type="button">
+            <Mail size={16} /> 登录
+          </button>
+          <button className={`capture-tab ${mode === 'register' ? 'active' : ''}`} onClick={() => setMode('register')} type="button">
+            <Shield size={16} /> 注册
+          </button>
+        </div>
+
+        <form className="form-grid" onSubmit={submit}>
+          <label className="form-row">
+            <span className="field-label">邮箱</span>
+            <input className="input" value={account} onChange={(event) => setAccount(event.target.value)} placeholder="name@example.com" autoComplete="email" />
+          </label>
+          {mode === 'register' && (
+            <label className="form-row">
+              <span className="field-label">昵称</span>
+              <input className="input" value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="用于显示的昵称" />
+            </label>
+          )}
+          <label className="form-row">
+            <span className="field-label">密码</span>
+            <input className="input" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 6 位" />
+          </label>
+          {message && <span className="muted" style={{ color: 'var(--rose)' }}>{message}</span>}
+          <button className="btn primary" type="submit" disabled={mutation.isPending}>
+            {mutation.isPending ? '处理中...' : mode === 'register' ? '注册并进入' : '进入工作台'}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+export function WorkspaceApp() {
+  const [authed, setAuthed] = useState(() => Boolean(localStorage.getItem('idea-island-token')));
+
+  const login = (token: string, nickname?: string) => {
+    localStorage.setItem('idea-island-token', token);
+    if (nickname) localStorage.setItem('idea-island-nickname', nickname);
+    const nextView = savedWorkspaceView() ?? 'inbox';
+    window.history.replaceState(null, '', viewPaths[nextView]);
+    setAuthed(true);
+  };
+
+  const logout = () => {
+    void authApi.logout().catch(() => undefined);
+    localStorage.removeItem('idea-island-token');
+    setAuthed(false);
+    window.history.replaceState(null, '', '/login');
+  };
+
+  if (!authed) {
+    return <AuthLoginPage onLogin={login} />;
+  }
+
+  return <AuthenticatedWorkspace onLogout={logout} />;
+}
+
+function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
+  const queryClient = useQueryClient();
+  const [activeView, setActiveView] = useState<ViewKey>(() => {
+    const pathView = viewFromPath(window.location.pathname);
+    return window.location.pathname === '/login' ? savedWorkspaceView() ?? pathView : pathView;
+  });
+  const [activeTopicId, setActiveTopicId] = useState<number>();
+  const [selectedSettingsTopicId, setSelectedSettingsTopicId] = useState<number>();
+  const [selectedMaterialId, setSelectedMaterialIdState] = useState<number | undefined>();
+  const [readRegistry, setReadRegistry] = useState<ReadMaterialRegistry>(readMaterialRegistry);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const [successNotice, setSuccessNotice] = useState<{ id: number; text: string }>();
+
+  const notifySuccess: NotifySuccess = (text) => {
+    setSuccessNotice({ id: Date.now(), text });
+  };
+
+  useEffect(() => {
+    if (window.location.pathname === '/login') {
+      const nextView = savedWorkspaceView() ?? 'inbox';
+      window.history.replaceState(null, '', viewPaths[nextView]);
+      setActiveView(nextView);
+    }
+    const onPopState = () => {
+      const nextView = viewFromPath(window.location.pathname);
+      setActiveView(nextView);
+      saveWorkspacePrefs((current) => ({ ...current, activeView: nextView }));
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const changeView = (view: ViewKey) => {
+    setActiveView(view);
+    saveWorkspacePrefs((current) => ({ ...current, activeView: view }));
+    window.history.pushState(null, '', viewPaths[view]);
+  };
+
+  useEffect(() => {
+    saveWorkspacePrefs((current) => ({ ...current, activeView }));
+  }, [activeView]);
+
+  useEffect(() => {
+    if (!activeTopicId) return;
+    saveWorkspacePrefs((current) => ({ ...current, activeTopicId }));
+  }, [activeTopicId]);
+
+  const setSelectedMaterialId = (id: number | undefined) => {
+    setSelectedMaterialIdState(id);
+  };
+
+  const markMaterialRead = (material: Material) => {
+    if (!canBeUnread(material)) return;
+    const key = materialReadKey(material);
+    setReadRegistry((current) => {
+      if (current[key]) return current;
+      const next = { ...current, [key]: true as const };
+      try {
+        localStorage.setItem(readMaterialsStorageKey, JSON.stringify(next));
+      } catch {
+        // Ignore storage failures; read state is an enhancement.
+      }
+      return next;
+    });
+  };
+
+  const topicsQuery = useQuery({
+    queryKey: queryKeys.topics,
+    queryFn: workspaceApi.listTopics,
+  });
+
+  const topics = topicsQuery.data ?? [];
+
+  const topicCountQueries = useQueries({
+    queries: topics.flatMap((topic) => [
+      {
+        queryKey: ['sidebar-count', topic.id, 'inbox'] as const,
+        queryFn: () =>
+          workspaceApi.listInbox({
+            topicId: topic.id,
+            status: ['INBOX', 'PENDING_REVIEW'],
+            page: 1,
+            pageSize: 1,
+          }),
+      },
+      {
+        queryKey: ['sidebar-count', topic.id, 'library'] as const,
+        queryFn: () =>
+          workspaceApi.listMaterials({
+            topicId: topic.id,
+            status: ['COLLECTED', 'ARCHIVED'],
+            page: 1,
+            pageSize: 1,
+          }),
+      },
+    ]),
+  });
+
+  const unreadCountQueries = useQueries({
+    queries: topics.flatMap((topic) => [
+      {
+        queryKey: ['sidebar-unread', topic.id, 'inbox'] as const,
+        queryFn: () =>
+          workspaceApi.listInbox({
+            topicId: topic.id,
+            status: ['INBOX'],
+            sortBy: 'statusAt',
+            page: 1,
+            pageSize: 100,
+          }),
+      },
+      {
+        queryKey: ['sidebar-unread', topic.id, 'library'] as const,
+        queryFn: () =>
+          workspaceApi.listMaterials({
+            topicId: topic.id,
+            status: ['COLLECTED'],
+            sortBy: 'statusAt',
+            page: 1,
+            pageSize: 100,
+          }),
+      },
+    ]),
+  });
+
+  const topicCounts = useMemo(() => {
+    const counts: Record<number, TopicSidebarCount> = {};
+    topics.forEach((topic, index) => {
+      const inbox = topicCountQueries[index * 2]?.data?.total ?? 0;
+      const library = topicCountQueries[index * 2 + 1]?.data?.total ?? 0;
+      const unreadInboxItems = unreadCountQueries[index * 2]?.data?.items ?? [];
+      const unreadLibraryItems = unreadCountQueries[index * 2 + 1]?.data?.items ?? [];
+      counts[topic.id] = {
+        inbox,
+        library,
+        total: inbox + library,
+        unreadInbox: unreadInboxItems.filter((material) => isMaterialUnread(material, readRegistry)).length,
+        unreadLibrary: unreadLibraryItems.filter((material) => isMaterialUnread(material, readRegistry)).length,
+      };
+    });
+    return counts;
+  }, [readRegistry, topicCountQueries, topics, unreadCountQueries]);
+
+  useEffect(() => {
+    if (!topics.length) return;
+    const savedTopicId = readWorkspacePrefs().activeTopicId;
+    const fallbackTopicId = savedTopicId && topics.some((topic) => topic.id === savedTopicId)
+      ? savedTopicId
+      : topics[0].id;
+    setActiveTopicId((current) => current ?? fallbackTopicId);
+    setSelectedSettingsTopicId((current) => current ?? fallbackTopicId);
+  }, [topics]);
+
+  const activeTopic = topics.find((topic) => topic.id === activeTopicId) ?? topics[0];
+
+  const openTopicSettings = () => {
+    changeView('topicSettings');
+    setSelectedSettingsTopicId((current) => current ?? activeTopic?.id);
+  };
+
+  const invalidateWorkspace = () => {
+    void queryClient.invalidateQueries();
+  };
+
+  const isWorkspaceView = activeView === 'inbox' || activeView === 'library' || activeView === 'search' || activeView === 'invalid';
+  const pageTitle = isWorkspaceView && activeTopic
+    ? `${activeTopic.name} / ${viewLabels[activeView]}`
+    : viewLabels[activeView];
+
+  return (
+    <div className="app">
+      <Sidebar
+        topics={topics}
+        topicCounts={topicCounts}
+        activeView={activeView}
+        activeTopicId={activeTopic?.id}
+        onViewChange={changeView}
+        onTopicSelect={(topicId) => {
+          setActiveTopicId(topicId);
+          saveWorkspacePrefs((current) => ({ ...current, activeTopicId: topicId }));
+        }}
+        onCapture={() => setCaptureOpen(true)}
+        onSettings={openTopicSettings}
+      />
+
+      <main className="main">
+        <header className="topbar">
+          <div>
+            <h1>{pageTitle}</h1>
+            <p>{viewDescriptions[activeView]}</p>
+          </div>
+          <div className="topbar-actions">
+            {(activeView === 'library' || activeView === 'search' || activeView === 'invalid') && (
+              <button className="btn compact ghost" onClick={() => changeView(activeView === 'invalid' ? 'library' : 'invalid')}>
+                {activeView === 'invalid' ? '返回资料库' : '失效资料'}
+              </button>
+            )}
+            <button className="btn primary" onClick={() => setCaptureOpen(true)}>
+              <Plus size={18} /> 采集资料
+            </button>
+          </div>
+        </header>
+
+        {activeView === 'topicSettings' ? (
+          <TopicSettingsPage
+            topics={topics}
+            selectedTopicId={selectedSettingsTopicId ?? activeTopic?.id}
+            onSelectTopic={(topicId) => {
+              setSelectedSettingsTopicId(topicId);
+            }}
+            onChanged={invalidateWorkspace}
+            onSuccess={notifySuccess}
+          />
+        ) : activeView === 'stats' ? (
+          <StatsPlaceholder />
+        ) : activeView === 'assistant' ? (
+          <AssistantPlaceholder />
+        ) : activeView === 'profile' ? (
+          <ProfileDashboard topics={topics} topicCounts={topicCounts} onLogout={onLogout} onSuccess={notifySuccess} />
+        ) : (
+          <WorkspaceView
+            view={activeView}
+            activeTopic={activeTopic}
+            selectedMaterialId={selectedMaterialId}
+            onSelectMaterial={setSelectedMaterialId}
+            readRegistry={readRegistry}
+            onReadMaterial={markMaterialRead}
+            onChanged={invalidateWorkspace}
+            onSuccess={notifySuccess}
+          />
+        )}
+      </main>
+
+      <MobileBar
+        activeView={activeView}
+        onViewChange={changeView}
+        onCapture={() => setCaptureOpen(true)}
+      />
+
+      {captureOpen && (
+        <CaptureModal
+          topics={topics}
+          activeTopicId={activeTopic?.id}
+          onClose={() => setCaptureOpen(false)}
+          onSuccess={notifySuccess}
+          onCreated={(material) => {
+            setCaptureOpen(false);
+            setActiveTopicId(material.topicId);
+            saveWorkspacePrefs((current) => ({ ...current, activeTopicId: material.topicId }));
+            changeView('inbox');
+            setSelectedMaterialId(material.id);
+            invalidateWorkspace();
+          }}
+        />
+      )}
+      <SuccessPopup notice={successNotice} onClose={() => setSuccessNotice(undefined)} />
+    </div>
+  );
+}
+
+function SuccessPopup({
+  notice,
+  onClose,
+}: {
+  notice?: { id: number; text: string };
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(onClose, 2300);
+    return () => window.clearTimeout(timer);
+  }, [notice?.id, onClose]);
+
+  if (!notice) return null;
+
+  return (
+    <div className="success-popup-layer" role="status" aria-live="polite">
+      <div className="success-popup">
+        <div className="success-popup-icon">
+          <Check size={26} />
+        </div>
+        <div>
+          <strong>操作成功</strong>
+          <p>{notice.text}</p>
+        </div>
+        <button className="success-popup-close" type="button" onClick={onClose} aria-label="关闭提示">
+          <X size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({
+  topics,
+  topicCounts,
+  activeView,
+  activeTopicId,
+  onViewChange,
+  onTopicSelect,
+  onCapture,
+  onSettings,
+}: {
+  topics: Topic[];
+  topicCounts: Record<number, TopicSidebarCount>;
+  activeView: ViewKey;
+  activeTopicId?: number;
+  onViewChange: (view: ViewKey) => void;
+  onTopicSelect: (topicId: number) => void;
+  onCapture: () => void;
+  onSettings: () => void;
+}) {
+  const allTopicCounts = topics.reduce<TopicSidebarCount>(
+    (summary, topic) => {
+      const count = topicCounts[topic.id];
+      return {
+        inbox: summary.inbox + (count?.inbox ?? 0),
+        library: summary.library + (count?.library ?? 0),
+        total: summary.total + (count?.total ?? 0),
+        unreadInbox: summary.unreadInbox + (count?.unreadInbox ?? 0),
+        unreadLibrary: summary.unreadLibrary + (count?.unreadLibrary ?? 0),
+      };
+    },
+    { inbox: 0, library: 0, total: 0, unreadInbox: 0, unreadLibrary: 0 },
+  );
+  const activeCounts = activeTopicId ? topicCounts[activeTopicId] : allTopicCounts;
+  const [topicCollapsed, setTopicCollapsed] = useState(() => readWorkspacePrefs().topicNavCollapsed ?? false);
+  const activeTopic = topics.find((topic) => topic.id === activeTopicId);
+
+  const toggleTopicCollapsed = () => {
+    setTopicCollapsed((current) => {
+      const next = !current;
+      saveWorkspacePrefs((prefs) => ({ ...prefs, topicNavCollapsed: next }));
+      return next;
+    });
+  };
+
+  return (
+    <aside className="sidebar">
+      <div className="brand">
+        <div className="brand-mark">II</div>
+        <div>
+          <strong>Idea Island</strong>
+          <span>海量碎片灵感工作台</span>
+        </div>
+      </div>
+
+      <button className="sidebar-capture" onClick={onCapture}>
+        <Plus size={18} /> 采集资料
+      </button>
+
+      <nav className="nav-group">
+        <p className="nav-section-title">工作区</p>
+        <div className={`topic-nav ${topicCollapsed ? 'collapsed' : ''}`}>
+          <button className="nav-section-toggle" type="button" onClick={toggleTopicCollapsed} aria-expanded={!topicCollapsed}>
+            <span className="nav-label">
+              <Tags size={17} />
+              <span>主题</span>
+            </span>
+            <span className="topic-toggle-meta">
+              {topicCollapsed && activeTopic ? <span className="topic-current-inline">{shortTopicName(activeTopic.name)}</span> : null}
+              {topicCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+            </span>
+          </button>
+          {!topicCollapsed && (
+            <div className="topic-nav-list">
+              {topics.map((topic) => (
+                <button
+                  key={topic.id}
+                  className={`nav-item ${topic.id === activeTopicId ? 'active' : ''}`}
+                  onClick={() => {
+                    onTopicSelect(topic.id);
+                    setTopicCollapsed(true);
+                    saveWorkspacePrefs((prefs) => ({ ...prefs, topicNavCollapsed: true }));
+                  }}
+                >
+                  <span>{topic.name}</span>
+                  <span className="nav-count">{topicCounts[topic.id]?.total ?? topic.materialCount}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <NavButton active={activeView === 'inbox'} onClick={() => onViewChange('inbox')} icon={<Inbox size={17} />} label="收件箱" count={activeCounts?.inbox ?? 0} unreadCount={activeCounts?.unreadInbox ?? 0} />
+        <NavButton active={activeView === 'library'} onClick={() => onViewChange('library')} icon={<Archive size={17} />} label="资料库" count={activeCounts?.library ?? 0} unreadCount={activeCounts?.unreadLibrary ?? 0} />
+        <NavButton active={activeView === 'search'} onClick={() => onViewChange('search')} icon={<Search size={17} />} label="搜索" />
+      </nav>
+
+      <nav className="nav-group utility-nav">
+        <p className="nav-section-title">功能</p>
+        <NavButton active={activeView === 'topicSettings'} onClick={onSettings} icon={<Settings size={17} />} label="主题设置" />
+        <NavButton active={activeView === 'stats'} onClick={() => onViewChange('stats')} icon={<BarChart3 size={17} />} label="统计" />
+        <NavButton active={activeView === 'assistant'} onClick={() => onViewChange('assistant')} icon={<MessageCircle size={17} />} label="灵感助手" />
+      </nav>
+
+      <nav className="nav-group sidebar-profile">
+        <NavButton active={activeView === 'profile'} onClick={() => onViewChange('profile')} icon={<User size={17} />} label="个人中心" />
+      </nav>
+    </aside>
+  );
+}
+
+function NavButton({
+  active,
+  icon,
+  label,
+  count,
+  unreadCount,
+  onClick,
+}: {
+  active: boolean;
+  icon?: ReactNode;
+  label: string;
+  count?: number;
+  unreadCount?: number;
+  onClick: () => void;
+}) {
+  return (
+    <button className={`nav-item ${active ? 'active' : ''}`} onClick={onClick}>
+      <span className="nav-label">
+        {icon}
+        <span>{label}</span>
+      </span>
+      <span className="nav-count-row">
+        {count != null && <span className="nav-count">{count}</span>}
+        {unreadCount ? <span className="nav-unread">{unreadCount}</span> : null}
+      </span>
+    </button>
+  );
+}
+
+function MobileBar({
+  activeView,
+  onViewChange,
+  onCapture,
+}: {
+  activeView: ViewKey;
+  onViewChange: (view: ViewKey) => void;
+  onCapture: () => void;
+}) {
+  return (
+    <nav className="mobile-bar">
+      <button className={activeView === 'inbox' ? 'active' : ''} onClick={() => onViewChange('inbox')}>收件箱</button>
+      <button className={activeView === 'library' ? 'active' : ''} onClick={() => onViewChange('library')}>资料库</button>
+      <button onClick={onCapture}>采集</button>
+      <button className={activeView === 'search' ? 'active' : ''} onClick={() => onViewChange('search')}>搜索</button>
+      <button className={activeView === 'profile' ? 'active' : ''} onClick={() => onViewChange('profile')}>我的</button>
+    </nav>
+  );
+}
+
+function WorkspaceView({
+  view,
+  activeTopic,
+  selectedMaterialId,
+  onSelectMaterial,
+  readRegistry,
+  onReadMaterial,
+  onChanged,
+  onSuccess,
+}: {
+  view: Exclude<ViewKey, 'topicSettings' | 'stats' | 'assistant' | 'profile'>;
+  activeTopic?: Topic;
+  selectedMaterialId?: number;
+  onSelectMaterial: (id: number | undefined) => void;
+  readRegistry: ReadMaterialRegistry;
+  onReadMaterial: (material: Material) => void;
+  onChanged: () => void;
+  onSuccess: NotifySuccess;
+}) {
+  const [statusFilter, setStatusFilter] = useState<MaterialStatus[]>([]);
+  const [typeFilter, setTypeFilter] = useState<MaterialType[]>([]);
+  const [keyword, setKeyword] = useState('');
+  const [sortBy, setSortBy] = useState<'createdAt' | 'score' | 'statusAt'>('statusAt');
+  const [tagFilters, setTagFilters] = useState<Record<string, string[]>>({});
+  const [tagMenuOpen, setTagMenuOpen] = useState(false);
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const filterPrefsKey = workspaceFilterKey(view, activeTopic?.id);
+  const skipNextFilterSave = useRef(false);
+
+  useEffect(() => {
+    const prefs = readWorkspacePrefs();
+    const saved = prefs.filters?.[filterPrefsKey] ?? {};
+    const savedSortBy = prefs.schemaVersion === 2 ? saved.sortBy : saved.sortBy === 'createdAt' ? 'statusAt' : saved.sortBy;
+    skipNextFilterSave.current = true;
+    setStatusFilter(saved.statusFilter ?? []);
+    setTypeFilter(saved.typeFilter ?? []);
+    setKeyword(saved.keyword ?? '');
+    setSortBy(savedSortBy ?? 'statusAt');
+    setTagFilters(saved.tagFilters ?? {});
+    setUnreadOnly(saved.unreadOnly ?? false);
+    setTagMenuOpen(false);
+  }, [filterPrefsKey]);
+
+  useEffect(() => {
+    if (skipNextFilterSave.current) {
+      skipNextFilterSave.current = false;
+      return;
+    }
+    saveWorkspacePrefs((current) => ({
+      ...current,
+      filters: {
+        ...(current.filters ?? {}),
+        [filterPrefsKey]: {
+          keyword,
+          sortBy,
+          statusFilter,
+          typeFilter,
+          tagFilters,
+          unreadOnly,
+        },
+      },
+    }));
+  }, [filterPrefsKey, keyword, sortBy, statusFilter, tagFilters, typeFilter, unreadOnly]);
+
+  const tagGroupsQuery = useQuery({
+    queryKey: queryKeys.tagGroups(activeTopic?.id),
+    queryFn: () => workspaceApi.listTagGroups(activeTopic!.id),
+    enabled: Boolean(activeTopic?.id),
+  });
+
+  const tagGroups = tagGroupsQuery.data ?? [];
+
+  const params = useMemo<MaterialListParams>(() => {
+    const base: MaterialListParams = {
+      topicId: activeTopic?.id,
+      keyword,
+      materialType: typeFilter,
+      tagFilters,
+      sortBy,
+      sortDirection: 'desc',
+      pageSize,
+    };
+
+    if (view === 'library') {
+      base.status = statusFilter.length ? statusFilter : ['COLLECTED', 'ARCHIVED'];
+    } else if (view === 'invalid') {
+      base.status = ['INVALID'];
+    } else if (view === 'inbox') {
+      base.status = ['INBOX', 'PENDING_REVIEW'];
+    } else {
+      base.status = statusFilter;
+    }
+
+    return base;
+  }, [activeTopic?.id, keyword, sortBy, statusFilter, tagFilters, typeFilter, view]);
+
+  const query = useInfiniteQuery({
+    queryKey:
+      view === 'search'
+        ? queryKeys.search(params)
+        : view === 'inbox'
+          ? queryKeys.inbox(params)
+          : queryKeys.materials(params),
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) => {
+      const pageParams = { ...params, page: pageParam as number };
+      if (pageParams.keyword?.trim()) return workspaceApi.searchMaterials(pageParams);
+      if (view === 'search') return workspaceApi.listMaterials(pageParams);
+      if (view === 'inbox') return workspaceApi.listInbox(pageParams);
+      return workspaceApi.listMaterials(pageParams);
+    },
+    getNextPageParam: (lastPage) => {
+      const loaded = lastPage.page * lastPage.pageSize;
+      return loaded < lastPage.total ? lastPage.page + 1 : undefined;
+    },
+    enabled: Boolean(activeTopic?.id),
+  });
+
+  const items = flattenPages(query.data);
+  const unreadItemsCount = items.filter((item) => isMaterialUnread(item, readRegistry)).length;
+  const visibleItems = useMemo(
+    () => unreadOnly ? items.filter((item) => isMaterialUnread(item, readRegistry)) : items,
+    [items, readRegistry, unreadOnly],
+  );
+
+  useEffect(() => {
+    if (!visibleItems.length) {
+      onSelectMaterial(undefined);
+      return;
+    }
+    if (selectedMaterialId && !visibleItems.some((item) => item.id === selectedMaterialId)) {
+      onSelectMaterial(undefined);
+    }
+  }, [onSelectMaterial, selectedMaterialId, visibleItems]);
+
+  const selectedId = selectedMaterialId;
+  const selectedDetailQuery = useQuery({
+    queryKey: queryKeys.material(selectedId),
+    queryFn: () => workspaceApi.getMaterial(selectedId!),
+    enabled: Boolean(selectedId),
+  });
+
+  const detail = selectedDetailQuery.data;
+
+  const detailTagGroupsQuery = useQuery({
+    queryKey: queryKeys.tagGroups(detail?.topicId),
+    queryFn: () => workspaceApi.listTagGroups(detail!.topicId),
+    enabled: Boolean(detail?.topicId),
+  });
+
+  const detailTagGroups = detailTagGroupsQuery.data ?? [];
+
+  const selectedTagsCount = Object.values(tagFilters).reduce((sum, values) => sum + values.length, 0);
+
+  const selectMaterial = (material: Material) => {
+    onSelectMaterial(material.id);
+    if (unreadOnly && isMaterialUnread(material, readRegistry)) {
+      setUnreadOnly(false);
+    }
+    onReadMaterial(material);
+  };
+
+  const onScroll = (event: UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (distance < 90 && query.hasNextPage && !query.isFetchingNextPage) {
+      void query.fetchNextPage();
+    }
+  };
+
+  const toggleType = (type: MaterialType) => {
+    setTypeFilter((current) =>
+      current.includes(type) ? current.filter((value) => value !== type) : [...current, type],
+    );
+  };
+
+  const toggleTag = (group: TagGroup, value: string) => {
+    setTagFilters((current) => {
+      const key = String(group.id);
+      const selected = current[key] ?? [];
+      const next = group.exclusive
+        ? selected.includes(value)
+          ? []
+          : [value]
+        : selected.includes(value)
+          ? selected.filter((entry) => entry !== value)
+          : [...selected, value];
+      const copy = { ...current, [key]: next };
+      if (!copy[key].length) delete copy[key];
+      return copy;
+    });
+  };
+
+  const statusOptions: { value: MaterialStatus; label: string }[] =
+    view === 'library'
+      ? [
+          { value: 'COLLECTED', label: '已收录' },
+          { value: 'ARCHIVED', label: '已归档' },
+        ]
+      : view === 'invalid'
+        ? [{ value: 'INVALID', label: '已失效' }]
+      : view === 'inbox'
+        ? []
+        : [
+            { value: 'INBOX', label: '收件箱' },
+            { value: 'PENDING_REVIEW', label: '待评价' },
+            { value: 'COLLECTED', label: '已收录' },
+            { value: 'ARCHIVED', label: '已归档' },
+            { value: 'INVALID', label: '已失效' },
+          ];
+
+  return (
+    <section className="workspace">
+      {view === 'search' ? (
+        <div className="search-workspace">
+          <FilterPanel
+            keyword={keyword}
+            setKeyword={setKeyword}
+            sortBy={sortBy}
+            setSortBy={setSortBy}
+            typeFilter={typeFilter}
+            toggleType={toggleType}
+            tagGroups={tagGroups}
+            tagFilters={tagFilters}
+            selectedTagsCount={selectedTagsCount}
+            tagMenuOpen={tagMenuOpen}
+            setTagMenuOpen={setTagMenuOpen}
+            toggleTag={toggleTag}
+            showTopicHint
+          />
+          <div className="search-body">
+            <MaterialListPane
+              title="搜索结果"
+              items={visibleItems}
+              tagGroups={tagGroups}
+              selectedId={selectedId}
+              readRegistry={readRegistry}
+              statusOptions={statusOptions}
+              statusFilter={statusFilter}
+              setStatusFilter={setStatusFilter}
+              unreadOnly={unreadOnly}
+              unreadCount={unreadItemsCount}
+              onUnreadOnlyChange={setUnreadOnly}
+              loading={query.isLoading}
+              fetchingNext={query.isFetchingNextPage}
+              hasNext={query.hasNextPage}
+              onSelect={selectMaterial}
+              onScroll={onScroll}
+            />
+            <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+          </div>
+        </div>
+      ) : (
+        <div className="workspace-grid">
+          <div className="list-pane">
+            <FilterPanel
+              keyword={keyword}
+              setKeyword={setKeyword}
+              sortBy={sortBy}
+              setSortBy={setSortBy}
+              typeFilter={typeFilter}
+              toggleType={toggleType}
+              tagGroups={tagGroups}
+              tagFilters={tagFilters}
+              selectedTagsCount={selectedTagsCount}
+              tagMenuOpen={tagMenuOpen}
+              setTagMenuOpen={setTagMenuOpen}
+              toggleTag={toggleTag}
+            />
+            <MaterialListPane
+              title={view === 'library' ? '资料预览' : view === 'invalid' ? '失效资料' : '待处理资料'}
+              items={visibleItems}
+              tagGroups={tagGroups}
+              selectedId={selectedId}
+              readRegistry={readRegistry}
+              statusOptions={statusOptions}
+              statusFilter={statusFilter}
+              setStatusFilter={setStatusFilter}
+              unreadOnly={unreadOnly}
+              unreadCount={unreadItemsCount}
+              onUnreadOnlyChange={setUnreadOnly}
+              loading={query.isLoading}
+              fetchingNext={query.isFetchingNextPage}
+              hasNext={query.hasNextPage}
+              onSelect={selectMaterial}
+              onScroll={onScroll}
+            />
+          </div>
+          <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FilterPanel({
+  keyword,
+  setKeyword,
+  sortBy,
+  setSortBy,
+  typeFilter,
+  toggleType,
+  tagGroups,
+  tagFilters,
+  selectedTagsCount,
+  tagMenuOpen,
+  setTagMenuOpen,
+  toggleTag,
+  showTopicHint,
+}: {
+  keyword: string;
+  setKeyword: (value: string) => void;
+  sortBy: 'createdAt' | 'score' | 'statusAt';
+  setSortBy: (value: 'createdAt' | 'score' | 'statusAt') => void;
+  typeFilter: MaterialType[];
+  toggleType: (type: MaterialType) => void;
+  tagGroups: TagGroup[];
+  tagFilters: Record<string, string[]>;
+  selectedTagsCount: number;
+  tagMenuOpen: boolean;
+  setTagMenuOpen: (value: boolean) => void;
+  toggleTag: (group: TagGroup, value: string) => void;
+  showTopicHint?: boolean;
+}) {
+  return (
+    <div className="filter-panel">
+      <div className="filter-row">
+        <input
+          className="input"
+          value={keyword}
+          onChange={(event) => setKeyword(event.target.value)}
+          placeholder="搜索标题、描述、原始内容、评语、来源、链接或标签"
+        />
+        <select className="select" style={{ maxWidth: 170 }} value={sortBy} onChange={(event) => setSortBy(event.target.value as 'createdAt' | 'score' | 'statusAt')}>
+          <option value="statusAt">最近加入</option>
+          <option value="createdAt">最近创建</option>
+          <option value="score">评分优先</option>
+        </select>
+      </div>
+
+      {showTopicHint && <div className="muted" style={{ fontSize: 12 }}>按主题检索，标签条件按当前左侧主题的标签组选择。</div>}
+
+      <div className="filter-row wrap">
+        <span className="muted" style={{ fontSize: 12 }}>资料类型</span>
+        {materialTypes.map((type) => (
+          <button
+            key={type}
+            className={`chip ${typeFilter.includes(type) ? 'active' : ''}`}
+            onClick={() => toggleType(type)}
+          >
+            {materialTypeLabels[type]}
+          </button>
+        ))}
+      </div>
+
+      <div className="filter-row wrap">
+        {selectedTagsCount === 0 ? (
+          <span className="muted" style={{ fontSize: 12 }}>未选择标签条件</span>
+        ) : (
+          tagGroups.flatMap((group) =>
+            (tagFilters[String(group.id)] ?? []).map((value) => (
+              <span key={`${group.id}-${value}`} className="tag-chip" style={tagStyle(group)}>
+                <span className="tag-hash">#</span>{value}
+              </span>
+            )),
+          )
+        )}
+        <button className="btn compact ghost" onClick={() => setTagMenuOpen(!tagMenuOpen)}>添加标签条件</button>
+      </div>
+
+      {tagMenuOpen && (
+        <div className="tag-group-list">
+          {tagGroups.map((group) => (
+            <div className="tag-group-box" key={group.id}>
+              <div className="tag-group-head">
+                <strong>{group.name}</strong>
+                <span>{group.exclusive ? '单选组' : '多选组'}</span>
+              </div>
+              <div className="tag-picker">
+                {group.values.map((tag) => {
+                  const selected = (tagFilters[String(group.id)] ?? []).includes(tag.value);
+                  return (
+                    <button
+                      key={tag.id}
+                      className={`tag-option ${selected ? 'selected' : ''}`}
+                      style={tagStyle(group)}
+                      onClick={() => toggleTag(group, tag.value)}
+                    >
+                      <span className="tag-hash">#</span>{tag.value}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MaterialListPane({
+  title,
+  items,
+  tagGroups,
+  selectedId,
+  readRegistry,
+  statusOptions,
+  statusFilter,
+  setStatusFilter,
+  unreadOnly,
+  unreadCount,
+  onUnreadOnlyChange,
+  loading,
+  fetchingNext,
+  hasNext,
+  onSelect,
+  onScroll,
+}: {
+  title: string;
+  items: Material[];
+  tagGroups: TagGroup[];
+  selectedId?: number;
+  readRegistry: ReadMaterialRegistry;
+  statusOptions: { value: MaterialStatus; label: string }[];
+  statusFilter: MaterialStatus[];
+  setStatusFilter: (value: MaterialStatus[]) => void;
+  unreadOnly: boolean;
+  unreadCount: number;
+  onUnreadOnlyChange: (value: boolean) => void;
+  loading: boolean;
+  fetchingNext: boolean;
+  hasNext: boolean;
+  onSelect: (material: Material) => void;
+  onScroll: (event: UIEvent<HTMLDivElement>) => void;
+}) {
+  return (
+    <section className="list-pane">
+      {statusOptions.length > 1 && (
+        <StatusSwitchBar
+          options={statusOptions}
+          value={statusFilter}
+          onChange={setStatusFilter}
+        />
+      )}
+      <div className="list-toolbar">
+        <h2>{title}</h2>
+        <div className="list-toolbar-actions">
+          <button
+            type="button"
+            className={`unread-filter ${unreadOnly ? 'active' : ''}`}
+            onClick={() => onUnreadOnlyChange(!unreadOnly)}
+            title={unreadOnly ? '切换为全部资料' : '只查看未读资料'}
+          >
+            {unreadOnly ? `未读 ${unreadCount} 条` : `全部 ${items.length} 条`}
+          </button>
+        </div>
+      </div>
+      <div className="list-scroll" onScroll={onScroll}>
+        {loading ? (
+          <div className="load-state">加载中...</div>
+        ) : items.length === 0 ? (
+          <div className="empty-state">暂无资料</div>
+        ) : (
+          <div className="material-list">
+            {items.map((item) => (
+              <MaterialCard
+                key={item.id}
+                material={item}
+                tagGroups={tagGroups}
+                active={item.id === selectedId}
+                unread={isMaterialUnread(item, readRegistry)}
+                onClick={() => onSelect(item)}
+              />
+            ))}
+            <div className="load-state">
+              {fetchingNext ? '正在加载下一页...' : hasNext ? '继续下滑加载更多' : `已加载全部 ${items.length} 条`}
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function StatusSwitchBar({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: MaterialStatus; label: string }[];
+  value: MaterialStatus[];
+  onChange: (value: MaterialStatus[]) => void;
+}) {
+  const activeKey = value.length === 1 ? value[0] : 'ALL';
+  const switchItems = [{ value: 'ALL' as const, label: '全部' }, ...options];
+
+  return (
+    <div className="status-switch" aria-label="状态筛选">
+      {switchItems.map((option) => {
+        const active = option.value === activeKey || (option.value === 'ALL' && value.length === 0);
+        return (
+          <button
+            key={option.value}
+            type="button"
+            className={active ? 'active' : ''}
+            onClick={() => onChange(option.value === 'ALL' ? [] : [option.value])}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MaterialCard({
+  material,
+  tagGroups,
+  active,
+  unread,
+  onClick,
+}: {
+  material: Material;
+  tagGroups: TagGroup[];
+  active: boolean;
+  unread: boolean;
+  onClick: () => void;
+}) {
+  const coverKey = materialCoverKey(material);
+  const coverQuery = useQuery({
+    queryKey: ['file-url', coverKey],
+    queryFn: () => workspaceApi.resolveFile(coverKey!),
+    enabled: Boolean(coverKey),
+    staleTime: 5 * 60 * 1000,
+  });
+  const thumbnailUrl = material.meta.thumbnailUrl || coverQuery.data?.fileUrl || material.coverUrl;
+
+  return (
+    <button className={`material-card ${active ? 'active' : ''} ${unread ? 'unread' : ''}`} onClick={onClick}>
+      <img className="material-thumb" alt="" src={thumbnailUrl} />
+      <div className="material-content">
+        <div className="material-main">
+          <div className="material-meta-line">
+            {unread && <span className="unread-dot" aria-label="未读" />}
+            <span>{materialTypeLabels[material.materialType]}</span>
+            <span>{material.source || material.meta.sourcePlatform || '未知来源'}</span>
+            <StatusChip status={material.status} />
+            {unread && <span className="unread-label">未读</span>}
+          </div>
+          <h3 className="material-title">{material.title}</h3>
+          <p className="material-desc">{clampText(material.description || material.rawContent, 72)}</p>
+          <div className="tag-row">
+            {materialTagsForGroups(material, tagGroups).slice(0, 4).map((tag) => (
+              <TagChip key={`${tag.tagGroupKey}-${tag.tagValue}`} tag={tag} group={groupForTag(tag, tagGroups)} />
+            ))}
+          </div>
+        </div>
+        {(material.status === 'COLLECTED' || material.status === 'ARCHIVED') && (
+          <aside className="material-side">
+            <span className={`score-text ${scoreTone(material.score)}`}>{material.score?.toFixed(1) ?? '-'}</span>
+            {material.comment && <p className="material-comment">{clampText(material.comment, 40)}</p>}
+          </aside>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function StatusChip({ status }: { status: MaterialStatus }) {
+  return <span className="status-chip">{statusLabels[status]}</span>;
+}
+
+function TagChip({ tag, group }: { tag: MaterialTag; group?: TagGroup }) {
+  return (
+    <span className="tag-chip" style={tagStyle(group)}>
+      <span className="tag-hash">#</span>{tag.tagValue}
+    </span>
+  );
+}
+
+function RequiredLabel({ children, required }: { children: React.ReactNode; required?: boolean }) {
+  return (
+    <span className={`field-label ${required ? 'required' : ''}`}>
+      {children}
+      {required && <span aria-hidden="true">*</span>}
+    </span>
+  );
+}
+
+function MaterialDetailPanel({
+  material,
+  tagGroups,
+  onChanged,
+  onSuccess,
+}: {
+  material?: Material;
+  tagGroups: TagGroup[];
+  onChanged: () => void;
+  onSuccess: NotifySuccess;
+}) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState<UpdateMaterialPayload>({});
+  const [tagSelection, setTagSelection] = useState<MaterialTag[]>([]);
+  const [message, setMessage] = useState('');
+  const [collectOpen, setCollectOpen] = useState(false);
+  const [collectScore, setCollectScore] = useState(8);
+  const [collectComment, setCollectComment] = useState('');
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const [toast, setToast] = useState<{ tone: 'success' | 'error'; text: string }>();
+
+  const showToast = (tone: 'success' | 'error', text: string) => {
+    setToast({ tone, text });
+    window.setTimeout(() => {
+      setToast((current) => (current?.text === text ? undefined : current));
+    }, 3200);
+  };
+
+  useEffect(() => {
+    if (!material) return;
+    setEditing(false);
+    setMessage('');
+    setForm({
+      title: material.title,
+      description: material.description,
+      rawContent: material.rawContent,
+      sourceUrl: material.sourceUrl,
+      source: material.source,
+      score: material.score,
+      comment: material.comment,
+      materialType: material.materialType,
+    });
+    setCollectOpen(false);
+    setImagePreviewOpen(false);
+    setCollectScore(material.score ?? 8);
+    setCollectComment(material.comment ?? '');
+    setTagSelection(material.tags.filter((tag) => tag.tagType !== 'SYSTEM'));
+  }, [material?.id]);
+
+  const coverTone = useCoverTone(material?.coverUrl);
+  const imageFileKey = material ? materialCoverKey(material) : undefined;
+  const imageUrlQuery = useQuery({
+    queryKey: ['file-url', imageFileKey],
+    queryFn: () => workspaceApi.resolveFile(imageFileKey!),
+    enabled: Boolean(imageFileKey),
+  });
+  const displayCoverUrl = imageUrlQuery.data?.fileUrl || material?.coverUrl;
+  const displayCoverTone = useCoverTone(displayCoverUrl);
+
+  const updateMutation = useMutation({
+    mutationFn: async () => {
+      if (!material) throw new Error('未选择资料');
+      const updated = await workspaceApi.updateMaterial(material.id, form);
+      await workspaceApi.updateMaterialTags(material.id, tagSelection);
+      if (form.score != null && form.comment) {
+        await workspaceApi.collect(material.id, { score: Number(form.score), comment: form.comment });
+      }
+      return updated;
+    },
+    onSuccess: () => {
+      setEditing(false);
+      onSuccess('资料已保存');
+      void queryClient.invalidateQueries();
+      onChanged();
+    },
+    onError: (error) => {
+      const text = errorMessage(error);
+      setMessage(text);
+      showToast('error', `保存失败：${text}`);
+    },
+  });
+
+  const actionSuccessText: Record<'archive' | 'restore' | 'restoreCollected' | 'invalidate', string> = {
+    archive: '资料已归档',
+    restore: '资料已恢复到收件箱',
+    restoreCollected: '资料已恢复为已收录',
+    invalidate: '资料已标记失效',
+  };
+
+  const actionMutation = useMutation({
+    mutationFn: async (action: 'archive' | 'restore' | 'restoreCollected' | 'invalidate') => {
+      if (!material) throw new Error('未选择资料');
+      if (action === 'archive') return workspaceApi.archive(material.id);
+      if (action === 'restore') return workspaceApi.restore(material.id);
+      if (action === 'restoreCollected') return workspaceApi.restoreCollected(material.id);
+      return workspaceApi.invalidate(material.id, '手动标记失效');
+    },
+    onSuccess: (_result, action) => {
+      onSuccess(actionSuccessText[action]);
+      void queryClient.invalidateQueries();
+      onChanged();
+    },
+    onError: (error) => {
+      const text = errorMessage(error);
+      setMessage(text);
+      showToast('error', `操作失败：${text}`);
+    },
+  });
+
+  const collectMutation = useMutation({
+    mutationFn: async () => {
+      if (!material) throw new Error('未选择资料');
+      if (!collectComment.trim()) throw new Error('请补全评语');
+      const missingRequiredGroups = requiredTagGroupsMissing();
+      if (missingRequiredGroups.length > 0) {
+        throw new Error(`请补全必选标签：${missingRequiredGroups.map((group) => group.name).join('、')}`);
+      }
+      await workspaceApi.updateMaterialTags(material.id, tagSelection);
+      return workspaceApi.collect(material.id, {
+        score: collectScore,
+        comment: collectComment.trim(),
+      });
+    },
+    onSuccess: () => {
+      setCollectOpen(false);
+      onSuccess('资料已收录');
+      void queryClient.invalidateQueries();
+      onChanged();
+    },
+    onError: (error) => {
+      const text = errorMessage(error);
+      setMessage(text);
+      showToast('error', `收录失败：${text}`);
+    },
+  });
+
+  if (!material) {
+    return <section className="detail"><div className="empty-state">请选择一条资料</div></section>;
+  }
+
+  const updateField = (field: keyof UpdateMaterialPayload, value: string | number) => {
+    setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const toggleTag = (group: TagGroup, tag: TagValue) => {
+    setTagSelection((current) => {
+      const key = String(group.id);
+      const selected = current.some((entry) => entry.tagGroupKey === key && entry.tagValue === tag.value);
+      let next = group.exclusive ? current.filter((entry) => entry.tagGroupKey !== key) : [...current];
+
+      if (selected) {
+        next = current.filter((entry) => !(entry.tagGroupKey === key && entry.tagValue === tag.value));
+      } else {
+        next.push({ tagGroupKey: key, tagValue: tag.value, tagType: 'USER' });
+      }
+
+      return next;
+    });
+  };
+
+  const selectedTagValues = (group: TagGroup) =>
+    tagSelection
+      .filter((tag) => tag.tagGroupKey === String(group.id))
+      .map((tag) => tag.tagValue);
+
+  const requiredTagGroupsMissing = () =>
+    tagGroups.filter((group) => group.required && selectedTagValues(group).length === 0);
+
+  const selectedTags = editing ? tagSelection : material.tags;
+
+  const handleCollect = () => {
+    setMessage('');
+    setCollectScore(Number(form.score ?? material?.score ?? 8));
+    setCollectComment(String(form.comment ?? material?.comment ?? ''));
+    setCollectOpen(true);
+  };
+
+  return (
+    <>
+    {toast && (
+      <div className={`toast ${toast.tone}`} role="status">
+        {toast.tone === 'success' ? <Check size={18} /> : <X size={18} />}
+        <span>{toast.text}</span>
+      </div>
+    )}
+    <section className="detail">
+      <div
+        className={`detail-hero tone-${displayCoverTone}`}
+        style={{ '--cover-url': `url(${displayCoverUrl})` } as React.CSSProperties}
+      >
+        <div className="detail-toolbar">
+          <StatusChip status={material.status} />
+          <div className="filter-row">
+            {editing ? (
+              <>
+                <button className="btn compact primary" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}>
+                  <Check size={15} /> 保存
+                </button>
+                <button className="btn compact ghost" onClick={() => setEditing(false)}>取消</button>
+              </>
+            ) : (
+              <button className="btn compact ghost" onClick={() => setEditing(true)}>
+                <Edit3 size={15} /> 编辑
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="detail-title">
+          <div className="hero-title-box">
+            {editing ? (
+              <input className="input" value={form.title ?? ''} onChange={(event) => updateField('title', event.target.value)} />
+            ) : (
+              <h2>{material.title}</h2>
+            )}
+          </div>
+          <div className="hero-desc-box" style={{ marginTop: 10 }}>
+            {editing ? (
+              <textarea
+                className="textarea"
+                value={form.description ?? ''}
+                onChange={(event) => updateField('description', event.target.value)}
+              />
+            ) : (
+              <p>{material.description}</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+        <div className="detail-body">
+        {message && <div className="chip" style={{ color: 'var(--rose)' }}>{message}</div>}
+
+        <div className="info-grid">
+          <InfoCard label="资料类型">
+            {editing ? (
+              <select className="select" value={form.materialType} onChange={(event) => updateField('materialType', event.target.value)}>
+                {materialTypes.map((type) => <option key={type} value={type}>{materialTypeLabels[type]}</option>)}
+              </select>
+            ) : materialTypeLabels[material.materialType]}
+          </InfoCard>
+          <InfoCard label="来源">
+            {editing ? (
+              <input className="input" value={form.source ?? ''} onChange={(event) => updateField('source', event.target.value)} />
+            ) : material.source || '-'}
+          </InfoCard>
+          <InfoCard label="链接">
+            {editing ? (
+              <input className="input" value={form.sourceUrl ?? ''} onChange={(event) => updateField('sourceUrl', event.target.value)} />
+            ) : material.sourceUrl ? <a href={material.sourceUrl} target="_blank" rel="noreferrer">{clampText(material.sourceUrl, 28)}</a> : '-'}
+          </InfoCard>
+          <InfoCard label="评分">
+            {editing ? (
+              <input className="input" type="number" min={0} max={10} step={0.1} value={form.score ?? ''} onChange={(event) => updateField('score', Number(event.target.value))} />
+            ) : <span className={`score-text ${scoreTone(material.score)}`}>{material.score?.toFixed(1) ?? '-'}</span>}
+          </InfoCard>
+        </div>
+
+        <div className="section">
+          <h3>原始内容</h3>
+          {material.materialType === 'image' && displayCoverUrl && (
+            <button className="image-preview-trigger" type="button" onClick={() => setImagePreviewOpen(true)}>
+              <img className="detail-original-image" src={displayCoverUrl} alt={material.title} />
+            </button>
+          )}
+          {editing ? (
+            <textarea className="textarea" value={form.rawContent ?? ''} onChange={(event) => updateField('rawContent', event.target.value)} />
+          ) : (
+            <p className="read-block">{material.rawContent}</p>
+          )}
+        </div>
+
+        <div className="section">
+          <h3>评语</h3>
+          {editing ? (
+            <textarea className="textarea" value={form.comment ?? ''} onChange={(event) => updateField('comment', event.target.value)} />
+          ) : (
+            <p className="read-block">{material.comment || '尚未评价'}</p>
+          )}
+        </div>
+
+        <div className="section">
+          <h3>整理信息</h3>
+          <div className="tag-group-list">
+            {tagGroups.map((group) => {
+              const activeValues = selectedTags
+                .filter((tag) => tag.tagGroupKey === String(group.id))
+                .map((tag) => tag.tagValue);
+              if (!editing && activeValues.length === 0) return null;
+              return (
+                <div className="tag-group-box" key={group.id}>
+                  <div className="tag-group-head">
+                    <strong>{group.name}</strong>
+                    <span>{group.exclusive ? '单选' : '多选'}</span>
+                  </div>
+                  <div className="tag-picker">
+                    {editing
+                      ? group.values.map((tag) => (
+                          <button
+                            key={tag.id}
+                            className={`tag-option ${activeValues.includes(tag.value) ? 'selected' : ''}`}
+                            style={tagStyle(group)}
+                            onClick={() => toggleTag(group, tag)}
+                          >
+                            <span className="tag-hash">#</span>{tag.value}
+                          </button>
+                        ))
+                      : activeValues.map((value) => (
+                          <span className="tag-chip" style={tagStyle(group)} key={value}>
+                            <span className="tag-hash">#</span>{value}
+                          </span>
+                        ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {!editing && (
+          <div className="filter-row wrap">
+            {(material.status === 'INBOX' || material.status === 'PENDING_REVIEW') && (
+              <button className="btn compact primary" onClick={handleCollect}>
+                <Check size={15} /> 收录
+              </button>
+            )}
+            {material.status === 'COLLECTED' && (
+              <button className="btn compact" onClick={() => actionMutation.mutate('archive')}>
+                <Archive size={15} /> 归档
+              </button>
+            )}
+            {material.status === 'ARCHIVED' && (
+              <button className="btn compact" onClick={() => actionMutation.mutate('restoreCollected')}>
+                <RotateCcw size={15} /> 恢复收录
+              </button>
+            )}
+            {material.status === 'INVALID' ? (
+              <button className="btn compact" onClick={() => actionMutation.mutate('restore')}>
+                <RotateCcw size={15} /> 恢复收件箱
+              </button>
+            ) : (
+              <button className="btn compact danger" onClick={() => actionMutation.mutate('invalidate')}>
+                <Trash2 size={15} /> 标记失效
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+    {imagePreviewOpen && material.materialType === 'image' && displayCoverUrl && (
+      <div className="modal-backdrop image-preview-backdrop" onClick={() => setImagePreviewOpen(false)}>
+        <div className="image-preview-modal" role="dialog" aria-modal="true" aria-label="图片预览" onClick={(event) => event.stopPropagation()}>
+          <button type="button" className="image-preview-close" onClick={() => setImagePreviewOpen(false)} aria-label="关闭预览">
+            <X size={18} />
+          </button>
+          <img className="image-preview-full" src={displayCoverUrl} alt={material.title} />
+        </div>
+      </div>
+    )}
+    {collectOpen && (
+      <div className="modal-backdrop">
+        <div className="modal collect-modal" role="dialog" aria-modal="true" aria-labelledby="collectTitle">
+          <div className="settings-head" style={{ paddingBottom: 0, borderBottom: 0 }}>
+            <div>
+              <h2 id="collectTitle">收录资料</h2>
+              <p className="subtitle">补全评分和评语后，资料会进入资料库。</p>
+            </div>
+            <button type="button" className="btn compact ghost" onClick={() => setCollectOpen(false)}>
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="form-grid">
+            <label className="form-row">
+              <RequiredLabel required>评分</RequiredLabel>
+              <div className="score-slider-row">
+                <input
+                  type="range"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={collectScore}
+                  onChange={(event) => setCollectScore(Number(event.target.value))}
+                />
+                <strong className={`score-text ${scoreTone(collectScore)}`}>{collectScore.toFixed(1)}</strong>
+              </div>
+            </label>
+            <label className="form-row">
+              <RequiredLabel required>评语</RequiredLabel>
+              <textarea
+                className="textarea"
+                value={collectComment}
+                onChange={(event) => setCollectComment(event.target.value)}
+                placeholder="写下处理结论、摘要或后续使用建议"
+              />
+            </label>
+          </div>
+
+          <div className="section">
+            <h3>标签</h3>
+            <div className="tag-group-list">
+              {tagGroups.map((group) => {
+                const activeValues = selectedTagValues(group);
+                return (
+                  <div className="tag-group-box" key={group.id}>
+                    <div className="tag-group-head">
+                      <RequiredLabel required={group.required}>{group.name}</RequiredLabel>
+                      <span>{group.exclusive ? '单选' : '多选'}</span>
+                    </div>
+                    <div className="tag-picker">
+                      {group.values.map((tag) => (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          className={`tag-option ${activeValues.includes(tag.value) ? 'selected' : ''}`}
+                          style={tagStyle(group)}
+                          onClick={() => toggleTag(group, tag)}
+                        >
+                          <span className="tag-hash">#</span>{tag.value}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="modal-actions">
+            <button type="button" className="btn ghost" onClick={() => setCollectOpen(false)}>取消</button>
+            <button
+              type="button"
+              className="btn primary"
+              disabled={collectMutation.isPending || !collectComment.trim()}
+              onClick={() => collectMutation.mutate()}
+            >
+              确认收录
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
+  );
+}
+
+function InfoCard({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="info-card">
+      <span>{label}</span>
+      <strong>{children}</strong>
+    </div>
+  );
+}
+
+function CaptureModal({
+  topics,
+  activeTopicId,
+  onClose,
+  onSuccess,
+  onCreated,
+}: {
+  topics: Topic[];
+  activeTopicId?: number;
+  onClose: () => void;
+  onSuccess: NotifySuccess;
+  onCreated: (material: Material) => void;
+}) {
+  const [type, setType] = useState<MaterialType>('article');
+  const [payload, setPayload] = useState<SubmitMaterialPayload>({
+    topicId: activeTopicId ?? topics[0]?.id ?? 0,
+    materialType: 'article',
+    sourceUrl: '',
+    rawContent: '',
+    title: '',
+    description: '',
+    source: '',
+    coverUrl: '',
+  });
+  const [message, setMessage] = useState('');
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageFileName, setImageFileName] = useState('');
+  const linkRequired = type === 'article' || type === 'media';
+  const contentRequired = type === 'excerpt' || type === 'input';
+  const imageRequired = type === 'image';
+
+  useEffect(() => {
+    setPayload((current) => ({ ...current, topicId: activeTopicId ?? topics[0]?.id ?? current.topicId }));
+  }, [activeTopicId, topics]);
+
+  const mutation = useMutation({
+    mutationFn: workspaceApi.submitMaterial,
+    onSuccess: (material) => {
+      onSuccess('资料采集成功');
+      onCreated(material);
+    },
+    onError: (error) => setMessage(errorMessage(error)),
+  });
+
+  const setField = (field: keyof SubmitMaterialPayload, value: string | number) => {
+    setPayload((current) => ({ ...current, [field]: value }));
+  };
+
+  const switchType = (next: MaterialType) => {
+    setType(next);
+    setPayload((current) => ({ ...current, materialType: next }));
+  };
+
+  const uploadImageFile = async (file: File, source = '本地图片') => {
+    if (!file.type.startsWith('image/')) {
+      setMessage('请上传图片格式的文件');
+      return;
+    }
+    const fileName = file.name || `pasted-image-${Date.now()}.png`;
+    setType('image');
+    setImageUploading(true);
+    setImageFileName(fileName);
+    setMessage('');
+    setPayload((current) => ({
+      ...current,
+      materialType: 'image',
+      fileKey: undefined,
+      thumbnailKey: undefined,
+    }));
+    const reader = new FileReader();
+    reader.onload = () => {
+      setPayload((current) => ({
+        ...current,
+        materialType: 'image',
+        coverUrl: String(reader.result),
+        rawContent: current.rawContent || fileName,
+        title: current.title || fileName,
+        source: current.source || source,
+      }));
+    };
+    reader.readAsDataURL(file);
+    try {
+      const { fileKey } = await workspaceApi.uploadFile(file);
+      setPayload((current) => ({
+        ...current,
+        fileKey,
+        thumbnailKey: fileKey,
+      }));
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setImageUploading(false);
+    }
+  };
+
+  const handleImageUpload = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    void uploadImageFile(file);
+  };
+
+  const pastedImageFile = (clipboardData: DataTransfer) => {
+    const imageItem = Array.from(clipboardData.items).find((item) => item.kind === 'file' && item.type.startsWith('image/'));
+    const file = imageItem?.getAsFile();
+    if (!file) return undefined;
+    const extension = file.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+    return file.name
+      ? file
+      : new File([file], `pasted-image-${Date.now()}.${extension}`, { type: file.type });
+  };
+
+  const handlePasteImage = (clipboardData: DataTransfer, preventDefault: () => void) => {
+    const file = pastedImageFile(clipboardData);
+    if (!file) return false;
+    preventDefault();
+    void uploadImageFile(file, '剪贴板图片');
+    return true;
+  };
+
+  const handlePaste = (event: ReactClipboardEvent<HTMLFormElement>) => {
+    event.stopPropagation();
+    handlePasteImage(event.clipboardData, () => event.preventDefault());
+  };
+
+  useEffect(() => {
+    const listener = (event: ClipboardEvent) => {
+      if (event.defaultPrevented || !event.clipboardData) return;
+      handlePasteImage(event.clipboardData, () => event.preventDefault());
+    };
+    window.addEventListener('paste', listener);
+    return () => window.removeEventListener('paste', listener);
+  });
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    setMessage('');
+    if (!payload.topicId) {
+      setMessage('请先选择收集主题');
+      return;
+    }
+    if ((type === 'article' || type === 'media') && !payload.sourceUrl) {
+      setMessage('文章和音视频需要填写链接');
+      return;
+    }
+    if ((type === 'excerpt' || type === 'input') && !payload.rawContent) {
+      setMessage('摘录和输入需要填写内容');
+      return;
+    }
+    if (type === 'image' && imageUploading) {
+      setMessage('图片上传中，请稍后提交');
+      return;
+    }
+    if (type === 'image' && !payload.fileKey) {
+      setMessage('图片资料需要先上传或粘贴图片');
+      return;
+    }
+    mutation.mutate({ ...payload, materialType: type });
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <form className="modal capture-panel" onSubmit={submit} onPaste={handlePaste}>
+        <div className="settings-head" style={{ paddingBottom: 0, borderBottom: 0 }}>
+          <h2>快速采集</h2>
+          <button className="btn compact ghost" type="button" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        <div className="capture-tabs">
+          {materialTypes.map((item) => (
+            <button
+              type="button"
+              key={item}
+              className={`capture-tab ${type === item ? 'active' : ''}`}
+              onClick={() => switchType(item)}
+            >
+              {materialTypeLabels[item]}
+            </button>
+          ))}
+        </div>
+
+        <div className="form-grid">
+          <label className="form-row">
+            <RequiredLabel required>收集主题</RequiredLabel>
+            <select className="select" value={payload.topicId} onChange={(event) => setField('topicId', Number(event.target.value))}>
+              {topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.name}</option>)}
+            </select>
+          </label>
+
+          {(type === 'article' || type === 'media' || type === 'social') && (
+            <label className="form-row">
+              <RequiredLabel required={linkRequired}>{type === 'social' ? '来源链接，可选' : '来源链接'}</RequiredLabel>
+              <input className="input" value={payload.sourceUrl ?? ''} onChange={(event) => setField('sourceUrl', event.target.value)} placeholder="https://..." />
+            </label>
+          )}
+
+          {type === 'image' && (
+            <div className="form-row">
+              <RequiredLabel required={imageRequired}>图片文件</RequiredLabel>
+              <div className={`capture-image-uploader ${payload.coverUrl ? 'has-image' : ''}`}>
+                {payload.coverUrl ? (
+                  <img className="capture-image-preview" src={payload.coverUrl} alt="图片预览" />
+                ) : (
+                  <div className="capture-image-placeholder">
+                    <span>Ctrl+V</span>
+                  </div>
+                )}
+                <div className="capture-image-copy">
+                  <strong>{imageFileName || '选择图片或直接粘贴截图'}</strong>
+                  <span>支持 Ctrl+V 粘贴剪贴板图片，也可以选择本地图片文件。</span>
+                  <label className="btn compact ghost capture-file-action">
+                    选择文件
+                    <input type="file" accept="image/*" onChange={handleImageUpload} />
+                  </label>
+                </div>
+              </div>
+              {imageUploading && <span className="muted">图片上传中...</span>}
+            </div>
+          )}
+
+          <label className="form-row">
+            <RequiredLabel>标题，可选</RequiredLabel>
+            <input className="input" value={payload.title ?? ''} onChange={(event) => setField('title', event.target.value)} />
+          </label>
+
+          <label className="form-row">
+            <RequiredLabel required={contentRequired}>{type === 'article' || type === 'media' || type === 'image' ? '描述，可选' : '内容'}</RequiredLabel>
+            <textarea className="textarea" value={payload.rawContent ?? ''} onChange={(event) => setField('rawContent', event.target.value)} placeholder="粘贴片段，或直接记录一个想法" />
+          </label>
+
+          <label className="form-row">
+            <RequiredLabel>来源平台，可选</RequiredLabel>
+            <input className="input" value={payload.source ?? ''} onChange={(event) => setField('source', event.target.value)} />
+          </label>
+        </div>
+
+        {message && <span className="muted" style={{ color: 'var(--rose)' }}>{message}</span>}
+
+        <div className="modal-actions">
+          <button type="button" className="btn ghost" onClick={onClose}>取消</button>
+          <button type="submit" className="btn primary" disabled={mutation.isPending || imageUploading}>提交资料</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+type SettingsModal =
+  | { type: 'topic'; mode: 'create' }
+  | { type: 'topic'; mode: 'edit'; topic: Topic }
+  | { type: 'topic'; mode: 'delete'; topic: Topic }
+  | { type: 'group'; mode: 'create' }
+  | { type: 'group'; mode: 'edit' | 'delete'; group: TagGroup }
+  | { type: 'tag'; mode: 'create'; group: TagGroup }
+  | { type: 'tag'; mode: 'edit' | 'delete'; group: TagGroup; tag: TagValue };
+
+function TopicSettingsPage({
+  topics,
+  selectedTopicId,
+  onSelectTopic,
+  onChanged,
+  onSuccess,
+}: {
+  topics: Topic[];
+  selectedTopicId?: number;
+  onSelectTopic: (topicId: number) => void;
+  onChanged: () => void;
+  onSuccess: NotifySuccess;
+}) {
+  const queryClient = useQueryClient();
+  const selectedTopic = topics.find((topic) => topic.id === selectedTopicId) ?? topics[0];
+  const [modal, setModal] = useState<SettingsModal>();
+  const [message, setMessage] = useState('');
+
+  const groupsQuery = useQuery({
+    queryKey: queryKeys.tagGroups(selectedTopic?.id),
+    queryFn: () => workspaceApi.listTagGroups(selectedTopic!.id),
+    enabled: Boolean(selectedTopic?.id),
+  });
+  const groups = groupsQuery.data ?? [];
+
+  const mutation = useMutation({
+    mutationFn: async (submit: SettingsSubmit) => {
+      if (!modal) return;
+      if (modal.type === 'topic' && modal.mode === 'create') {
+        return workspaceApi.createTopic({ name: submit.name, description: submit.description });
+      }
+      if (modal.type === 'topic' && modal.mode === 'edit') {
+        return workspaceApi.updateTopic(modal.topic.id, { name: submit.name, description: submit.description });
+      }
+      if (modal.type === 'topic' && modal.mode === 'delete') {
+        return workspaceApi.deleteTopic(modal.topic.id);
+      }
+      if (modal.type === 'group' && modal.mode === 'create') {
+        return workspaceApi.createTagGroup(selectedTopic!.id, {
+          name: submit.name,
+          color: submit.color,
+          exclusive: submit.exclusive,
+          required: submit.required,
+          sortOrder: groups.length + 1,
+        });
+      }
+      if (modal.type === 'group' && modal.mode === 'edit') {
+        return workspaceApi.updateTagGroup(selectedTopic!.id, modal.group.id, {
+          name: submit.name,
+          color: submit.color,
+          exclusive: submit.exclusive,
+          required: submit.required,
+        });
+      }
+      if (modal.type === 'group' && modal.mode === 'delete') {
+        return workspaceApi.deleteTagGroup(selectedTopic!.id, modal.group.id);
+      }
+      if (modal.type === 'tag' && modal.mode === 'create') {
+        return workspaceApi.addTagValue(modal.group.id, submit.name);
+      }
+      if (modal.type === 'tag' && modal.mode === 'edit') {
+        return workspaceApi.updateTagValue(modal.group.id, modal.tag.id, submit.name);
+      }
+      if (modal.type === 'tag' && modal.mode === 'delete') {
+        return workspaceApi.deleteTagValue(modal.group.id, modal.tag.id);
+      }
+    },
+    onSuccess: (result) => {
+      if (modal) {
+        onSuccess(getSettingsSuccessText(modal));
+      }
+      if (
+        modal?.type === 'topic' &&
+        modal.mode === 'create' &&
+        result &&
+        typeof result === 'object' &&
+        'id' in result
+      ) {
+        onSelectTopic((result as Topic).id);
+      }
+      setModal(undefined);
+      setMessage('');
+      void queryClient.invalidateQueries();
+      onChanged();
+    },
+    onError: (error) => setMessage(errorMessage(error)),
+  });
+
+  if (!selectedTopic) {
+    return <section className="workspace"><div className="settings-page"><div className="empty-state">请先新建主题</div></div></section>;
+  }
+
+  return (
+    <section className="workspace">
+      <div className="settings-page">
+        <div className="settings-topic-select-row">
+          <div className="settings-topic-strip">
+            {topics.map((topic) => (
+              <button
+                className={`settings-topic-card ${topic.id === selectedTopic.id ? 'active' : ''}`}
+                key={topic.id}
+                onClick={() => onSelectTopic(topic.id)}
+              >
+                <strong>{topic.name}</strong>
+                <span>{topic.materialCount} 条资料</span>
+              </button>
+            ))}
+          </div>
+          <div className="settings-topic-actions">
+            <button className="btn" onClick={() => setModal({ type: 'topic', mode: 'create' })}>新建主题</button>
+            <button className="btn" onClick={() => setModal({ type: 'topic', mode: 'edit', topic: selectedTopic })}>编辑主题</button>
+            <button className="btn danger" onClick={() => setModal({ type: 'topic', mode: 'delete', topic: selectedTopic })}>删除主题</button>
+          </div>
+        </div>
+
+        <div className="settings-head">
+          <div>
+            <h2>{selectedTopic.name}</h2>
+            <p className="subtitle">{selectedTopic.description}</p>
+          </div>
+          <button className="btn primary" onClick={() => setModal({ type: 'group', mode: 'create' })}>新增标签组</button>
+        </div>
+
+        <div className="settings-group-list">
+          {groups.map((group) => (
+            <article className="settings-group-card" style={{ '--group-color': group.color } as React.CSSProperties} key={group.id}>
+              <div className="settings-group-head">
+                <div className="settings-group-title">
+                  <span className="group-swatch" />
+                  <div>
+                    <div className="settings-group-name-row">
+                      <strong>{group.name}</strong>
+                      <span className="muted" style={{ fontSize: 12 }}>{group.exclusive ? '单选' : '多选'}</span>
+                    </div>
+                    <span className="muted" style={{ fontSize: 12 }}>{group.values.length} 个标签</span>
+                  </div>
+                </div>
+                <div className="settings-group-actions">
+                  <button className="btn compact ghost" onClick={() => setModal({ type: 'group', mode: 'edit', group })}>编辑</button>
+                  <button className="btn compact danger" onClick={() => setModal({ type: 'group', mode: 'delete', group })}>删除</button>
+                </div>
+              </div>
+
+              <div className="settings-tags">
+                {group.values.map((tag) => (
+                  <span className="settings-tag-item" style={tagStyle(group)} key={tag.id}>
+                    <button className="settings-tag-name" onClick={() => setModal({ type: 'tag', mode: 'edit', group, tag })}>
+                      <span className="tag-hash">#</span>{tag.value}
+                    </button>
+                    <button className="settings-tag-remove" aria-label={`删除标签 ${tag.value}`} onClick={() => setModal({ type: 'tag', mode: 'delete', group, tag })}>×</button>
+                  </span>
+                ))}
+                <button className="btn compact ghost" onClick={() => setModal({ type: 'tag', mode: 'create', group })}>+ 标签</button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+
+      {modal && (
+        <SettingsModalView
+          modal={modal}
+          message={message}
+          pending={mutation.isPending}
+          onClose={() => {
+            setModal(undefined);
+            setMessage('');
+          }}
+          onSubmit={(submit) => mutation.mutate(submit)}
+        />
+      )}
+    </section>
+  );
+}
+
+type SettingsSubmit = {
+  name: string;
+  description: string;
+  color: string;
+  exclusive: boolean;
+  required: boolean;
+};
+
+function SettingsModalView({
+  modal,
+  message,
+  pending,
+  onClose,
+  onSubmit,
+}: {
+  modal: SettingsModal;
+  message: string;
+  pending: boolean;
+  onClose: () => void;
+  onSubmit: (submit: SettingsSubmit) => void;
+}) {
+  const initial = getSettingsInitial(modal);
+  const [form, setForm] = useState<SettingsSubmit>(initial);
+  const isDelete = modal.mode === 'delete';
+  const title = getSettingsTitle(modal);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    onSubmit(form);
+  };
+
+  const update = (field: keyof SettingsSubmit) => (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const target = event.target;
+    const value = target instanceof HTMLInputElement && target.type === 'checkbox' ? target.checked : target.value;
+    setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  return (
+    <div className="modal-backdrop">
+      <form className="modal" onSubmit={submit}>
+        <div className="settings-head" style={{ paddingBottom: 0, borderBottom: 0 }}>
+          <h2>{title}</h2>
+          <button type="button" className="btn compact ghost" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        {isDelete ? (
+          <p className="read-block">确认删除后将调用后端约束检查；如果已有资料引用，系统会拒绝删除并提示原因。</p>
+        ) : (
+          <div className="form-grid">
+            <label className="form-row">
+              <span className="field-label">{modal.type === 'tag' ? '标签名称' : '名称'}</span>
+              <input className="input" value={form.name} onChange={update('name')} required />
+            </label>
+            {modal.type === 'topic' && (
+              <label className="form-row">
+                <span className="field-label">描述</span>
+                <textarea className="textarea" value={form.description} onChange={update('description')} />
+              </label>
+            )}
+            {modal.type === 'group' && (
+              <>
+                <label className="form-row">
+                  <span className="field-label">标签组颜色</span>
+                  <div className="color-control">
+                    <input type="color" value={form.color} onChange={update('color')} />
+                    <strong>{form.color}</strong>
+                  </div>
+                </label>
+                <div className="form-inline">
+                  <label className="filter-row">
+                    <input type="checkbox" checked={form.exclusive} onChange={update('exclusive')} /> 单选组
+                  </label>
+                  <label className="filter-row">
+                    <input type="checkbox" checked={form.required} onChange={update('required')} /> 必填
+                  </label>
+                </div>
+              </>
+            )}
+            {modal.type === 'tag' && <p className="muted">标签颜色继承所在标签组颜色，不单独设置。</p>}
+          </div>
+        )}
+
+        {message && <span className="muted" style={{ color: 'var(--rose)' }}>{message}</span>}
+
+        <div className="modal-actions">
+          <button type="button" className="btn ghost" onClick={onClose}>取消</button>
+          <button type="submit" className={`btn ${isDelete ? 'danger' : 'primary'}`} disabled={pending}>
+            {isDelete ? '确认删除' : '保存'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function getSettingsInitial(modal: SettingsModal): SettingsSubmit {
+  if (modal.type === 'topic' && modal.mode !== 'create') {
+    return {
+      name: modal.topic.name,
+      description: modal.topic.description,
+      color: readStoredThemeColor(),
+      exclusive: false,
+      required: false,
+    };
+  }
+  if (modal.type === 'group' && modal.mode !== 'create') {
+    return {
+      name: modal.group.name,
+      description: '',
+      color: modal.group.color,
+      exclusive: modal.group.exclusive,
+      required: modal.group.required,
+    };
+  }
+  if (modal.type === 'tag' && modal.mode !== 'create') {
+    return {
+      name: modal.tag.value,
+      description: '',
+      color: modal.group.color,
+      exclusive: false,
+      required: false,
+    };
+  }
+  return {
+    name: '',
+    description: '',
+    color: readStoredThemeColor(),
+    exclusive: false,
+    required: false,
+  };
+}
+
+function getSettingsTitle(modal: SettingsModal) {
+  if (modal.type === 'topic') {
+    if (modal.mode === 'create') return '新建主题';
+    if (modal.mode === 'edit') return '编辑主题';
+    return '删除主题';
+  }
+  if (modal.type === 'group') {
+    if (modal.mode === 'create') return '新增标签组';
+    if (modal.mode === 'edit') return '编辑标签组';
+    return '删除标签组';
+  }
+  if (modal.mode === 'create') return '添加标签';
+  if (modal.mode === 'edit') return '编辑标签';
+  return '删除标签';
+}
+
+function getSettingsSuccessText(modal: SettingsModal) {
+  if (modal.type === 'topic') {
+    if (modal.mode === 'create') return '主题已新建';
+    if (modal.mode === 'edit') return '主题已保存';
+    return '主题已删除';
+  }
+  if (modal.type === 'group') {
+    if (modal.mode === 'create') return '标签组已新增';
+    if (modal.mode === 'edit') return '标签组已保存';
+    return '标签组已删除';
+  }
+  if (modal.mode === 'create') return '标签已添加';
+  if (modal.mode === 'edit') return '标签已保存';
+  return '标签已删除';
+}
+
+function StatsPlaceholder() {
+  return (
+    <section className="workspace">
+      <div className="settings-page">
+        <div className="settings-head">
+          <div>
+            <h2>统计</h2>
+            <p className="subtitle">统计接口已在后端规划中，当前先保留全局功能入口。</p>
+          </div>
+        </div>
+        <div className="empty-state">后续接入统计接口后展示主题分布、状态分布、周新增和平均评分。</div>
+      </div>
+    </section>
+  );
+}
+
+function AssistantPlaceholder() {
+  return (
+    <section className="workspace">
+      <div className="settings-page">
+        <div className="settings-head">
+          <div>
+            <h2>灵感助手</h2>
+            <p className="subtitle">AI 对话功能开发中。</p>
+          </div>
+        </div>
+        <div className="empty-state">开发中</div>
+      </div>
+    </section>
+  );
+}
+
+function MetricCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ProfileDashboard({
+  topics,
+  topicCounts,
+  onLogout,
+  onSuccess,
+}: {
+  topics: Topic[];
+  topicCounts: Record<number, TopicSidebarCount>;
+  onLogout: () => void;
+  onSuccess: NotifySuccess;
+}) {
+  const [isVip, setIsVip] = useState(() => localStorage.getItem('idea-island-vip') === 'true');
+  const [profileForm, setProfileForm] = useState({ nickname: '', note: '' });
+  const [profileMessage, setProfileMessage] = useState('');
+  const [themeColor, setThemeColor] = useState(readStoredThemeColor);
+  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(readStoredAppearanceMode);
+
+  const changeThemeColor = (value: string, notify = false) => {
+    const nextColor = saveThemeColor(value);
+    setThemeColor(nextColor);
+    if (notify) onSuccess('主题色已更新');
+  };
+
+  const changeAppearanceMode = (value: AppearanceMode) => {
+    setAppearanceMode(saveAppearanceMode(value));
+    onSuccess(value === 'dark' ? '已切换暗夜模式' : '已切换白天模式');
+  };
+
+  const profileQuery = useQuery({
+    queryKey: ['user-profile'],
+    queryFn: authApi.me,
+  });
+  const userStatsQuery = useQuery({
+    queryKey: ['user-stats'],
+    queryFn: authApi.stats,
+  });
+  const saveProfileMutation = useMutation({
+    mutationFn: () => authApi.updateMe({ nickname: profileForm.nickname }),
+    onSuccess: (profile) => {
+      setProfileForm((current) => ({
+        ...current,
+        nickname: profile.nickname || profile.username || '',
+      }));
+      setProfileMessage('已保存');
+      onSuccess('个人资料已保存');
+    },
+    onError: (error) => setProfileMessage(errorMessage(error)),
+  });
+
+  useEffect(() => {
+    const profile = profileQuery.data;
+    if (!profile) return;
+    setProfileForm({
+      nickname: profile.nickname || profile.username || '',
+      note: localStorage.getItem('idea-island-profile-note') || '',
+    });
+  }, [profileQuery.data]);
+
+  const totals = topics.reduce(
+    (summary, topic) => {
+      const count = topicCounts[topic.id] ?? {
+        inbox: 0,
+        library: topic.materialCount,
+        total: topic.materialCount,
+        unreadInbox: 0,
+        unreadLibrary: 0,
+      };
+      return {
+        inbox: summary.inbox + count.inbox,
+        library: summary.library + count.library,
+        total: summary.total + count.total,
+      };
+    },
+    { inbox: 0, library: 0, total: 0 },
+  );
+  const collectedRatio = totals.total ? Math.round((totals.library / totals.total) * 100) : 0;
+  const vipLimit = isVip ? 100 : 20;
+  const usedRatio = Math.min(100, Math.round((totals.total / vipLimit) * 100));
+  const primaryTopic = topics
+    .map((topic) => ({ topic, count: topicCounts[topic.id]?.total ?? topic.materialCount }))
+    .sort((a, b) => b.count - a.count)[0]?.topic;
+  const profile = profileQuery.data;
+  const displayName = profileForm.nickname || profile?.nickname || profile?.username || '未命名用户';
+  const displayAccount = profile?.email || profile?.phone || profile?.username || '-';
+  const realTopicCount = userStatsQuery.data?.topicCount ?? topics.length;
+  const realMaterialCount = userStatsQuery.data?.materialCount ?? totals.total;
+
+  return (
+    <section className="workspace">
+      <div className="profile-page">
+        <section className="profile-hero">
+          <div className="profile-identity">
+            <div className="profile-avatar large">
+              <User size={30} />
+            </div>
+            <div>
+              <div className="profile-name-row">
+                <h2>{displayName}</h2>
+                <span className={`vip-badge ${isVip ? 'active' : ''}`}>{isVip ? 'VIP' : '普通用户'}</span>
+              </div>
+              <p>{displayAccount}</p>
+              <p className="profile-note">{profileForm.note || '尚未填写个人说明'}</p>
+            </div>
+          </div>
+          <button className="btn danger compact" onClick={onLogout}>
+            <LogOut size={15} /> 退出登录
+          </button>
+        </section>
+
+        <section className="profile-metrics">
+          <MetricCard label="主题" value={realTopicCount} />
+          <MetricCard label="资料" value={realMaterialCount} />
+          <MetricCard label="待处理" value={totals.inbox} />
+          <MetricCard label="已沉淀" value={totals.library} />
+          <MetricCard label="沉淀比例" value={`${collectedRatio}%`} />
+        </section>
+
+        <div className="profile-main-grid">
+          <section className="profile-card profile-form-card">
+            <div className="section-title-row">
+              <h3>个人资料</h3>
+              <button
+                className="btn compact ghost"
+                disabled={saveProfileMutation.isPending}
+                onClick={() => {
+                  localStorage.setItem('idea-island-profile-note', profileForm.note);
+                  saveProfileMutation.mutate();
+                }}
+              >
+                保存
+              </button>
+            </div>
+            <div className="form-grid">
+              <label className="form-row">
+                <span className="field-label">昵称</span>
+                <input
+                  className="input"
+                  value={profileForm.nickname}
+                  onChange={(event) => setProfileForm((current) => ({ ...current, nickname: event.target.value }))}
+                />
+              </label>
+              <label className="form-row">
+                <span className="field-label">邮箱</span>
+                <input className="input" value={profile?.email || ''} disabled />
+              </label>
+              <label className="form-row">
+                <span className="field-label">一句话说明</span>
+                <input
+                  className="input"
+                  value={profileForm.note}
+                  onChange={(event) => setProfileForm((current) => ({ ...current, note: event.target.value }))}
+                  placeholder="用于自己识别这个账号的备注"
+                />
+              </label>
+              {profile?.phone && (
+                <label className="form-row">
+                  <span className="field-label">手机</span>
+                  <input className="input" value={profile.phone} disabled />
+                </label>
+              )}
+              {profileMessage && (
+                <span className="muted" style={{ color: profileMessage === '已保存' ? 'var(--theme)' : 'var(--rose)' }}>
+                  {profileMessage}
+                </span>
+              )}
+            </div>
+          </section>
+
+          <section className={`profile-card vip-panel ${isVip ? 'active' : ''}`}>
+            <div className="section-title-row">
+              <div>
+                <h3>会员能力</h3>
+                <p className="subtitle">{isVip ? '已开通 VIP，容量与高级能力已解锁。' : '普通用户，可升级解锁更高容量。'}</p>
+              </div>
+              <span className={`vip-badge ${isVip ? 'active' : ''}`}>{isVip ? 'VIP' : '普通'}</span>
+            </div>
+            <div className="capacity-row">
+              <span>资料容量</span>
+              <strong>{totals.total} / {vipLimit}</strong>
+            </div>
+            <div className="capacity-bar">
+              <span style={{ width: `${usedRatio}%` }} />
+            </div>
+            <div className="vip-feature-list clean">
+              <span>更多主题</span>
+              <span>更大容量</span>
+              <span>高级统计</span>
+              <span>优先体验新能力</span>
+            </div>
+            <button
+              className={isVip ? 'btn compact ghost' : 'btn compact primary'}
+              onClick={() => {
+                const next = !isVip;
+                localStorage.setItem('idea-island-vip', String(next));
+                setIsVip(next);
+                onSuccess(next ? 'VIP 已开通' : '已切换为普通用户');
+              }}
+            >
+              {isVip ? '切换为普通用户预览' : '升级 VIP'}
+            </button>
+          </section>
+
+          <section className="profile-card theme-panel">
+            <div className="section-title-row">
+              <div>
+                <h3>界面主题</h3>
+                <p className="subtitle">切换主题色和暗夜模式，夜间浏览会降低背景亮度和眩光。</p>
+              </div>
+              <button className="btn compact ghost" onClick={() => changeThemeColor(DEFAULT_THEME_COLOR, true)}>
+                恢复默认
+              </button>
+            </div>
+            <div className="appearance-toggle" aria-label="明暗模式">
+              <button
+                type="button"
+                className={appearanceMode === 'light' ? 'active' : ''}
+                onClick={() => changeAppearanceMode('light')}
+              >
+                白天
+              </button>
+              <button
+                type="button"
+                className={appearanceMode === 'dark' ? 'active' : ''}
+                onClick={() => changeAppearanceMode('dark')}
+              >
+                暗夜护眼
+              </button>
+            </div>
+            <div className="theme-control-grid">
+              <label className="form-row">
+                <span className="field-label">主题色</span>
+                <div className="color-control">
+                  <input
+                    type="color"
+                    value={themeColor}
+                    onChange={(event) => changeThemeColor(event.target.value)}
+                    onBlur={() => onSuccess('主题色已更新')}
+                  />
+                  <strong>{themeColor}</strong>
+                </div>
+              </label>
+              <div className="theme-swatches" aria-label="常用主题色">
+                {themePresets.map((preset) => (
+                  <button
+                    key={preset.color}
+                    type="button"
+                    className={themeColor === preset.color ? 'active' : ''}
+                    style={{ '--swatch-color': preset.color } as React.CSSProperties}
+                    onClick={() => changeThemeColor(preset.color, true)}
+                    title={preset.name}
+                    aria-label={`切换为${preset.name}`}
+                  />
+                ))}
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section className="profile-card">
+          <div className="section-title-row">
+            <h3>主题沉淀</h3>
+            <span className="subtitle">当前重点：{primaryTopic?.name ?? '-'}</span>
+          </div>
+          <div className="topic-stat-list modern">
+            {topics.map((topic) => {
+              const count = topicCounts[topic.id] ?? {
+                inbox: 0,
+                library: topic.materialCount,
+                total: topic.materialCount,
+              };
+              const progress = count.total ? Math.round((count.library / count.total) * 100) : 0;
+              return (
+                <div className="topic-stat-row" key={topic.id}>
+                  <div>
+                    <strong>{topic.name}</strong>
+                    <div className="topic-progress"><span style={{ width: `${progress}%` }} /></div>
+                  </div>
+                  <span>收件箱 {count.inbox}</span>
+                  <span>资料库 {count.library}</span>
+                  <span>总计 {count.total}</span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function ProfilePage({ topics, onLogout }: { topics: Topic[]; onLogout: () => void }) {
+  const totalMaterials = topics.reduce((sum, topic) => sum + topic.materialCount, 0);
+
+  return (
+    <section className="workspace">
+      <div className="settings-page">
+        <div className="settings-head">
+          <div>
+            <h2>我的</h2>
+            <p className="subtitle">账号资料、使用统计和本地开发配置。</p>
+          </div>
+          <button className="btn danger" onClick={onLogout}>
+            <LogOut size={16} /> 退出登录
+          </button>
+        </div>
+
+        <div className="profile-grid">
+          <section className="profile-card main-profile">
+            <div className="profile-avatar"><User size={28} /></div>
+            <div>
+              <h3>Alex</h3>
+              <p className="subtitle">demo@ideaisland.dev</p>
+            </div>
+          </section>
+
+          <section className="profile-card">
+            <span className="field-label">主题数量</span>
+            <strong>{topics.length}</strong>
+          </section>
+          <section className="profile-card">
+            <span className="field-label">资料总数</span>
+            <strong>{totalMaterials}</strong>
+          </section>
+          <section className="profile-card">
+            <span className="field-label">接口模式</span>
+            <strong>{import.meta.env.VITE_USE_MOCK === 'false' ? '真实后端' : 'Mock 数据'}</strong>
+          </section>
+        </div>
+
+        <div className="profile-grid two">
+          <section className="profile-card">
+            <h3>账号信息</h3>
+            <div className="form-grid">
+              <label className="form-row">
+                <span className="field-label">昵称</span>
+                <input className="input" defaultValue="Alex" />
+              </label>
+              <label className="form-row">
+                <span className="field-label">头像 Key</span>
+                <input className="input" placeholder="上传接口接入后写入 avatarKey" />
+              </label>
+              <button className="btn compact">保存资料</button>
+            </div>
+          </section>
+
+          <section className="profile-card">
+            <h3>开发配置</h3>
+            <p className="read-block">VITE_API_BASE_URL：{import.meta.env.VITE_API_BASE_URL || 'http://localhost:8091'}</p>
+            <p className="read-block">VITE_USE_MOCK：{import.meta.env.VITE_USE_MOCK ?? 'true'}</p>
+            <p className="subtitle">切换真实后端时，将 `.env` 中的 `VITE_USE_MOCK` 设置为 `false`。</p>
+          </section>
+        </div>
+      </div>
+    </section>
+  );
+}
