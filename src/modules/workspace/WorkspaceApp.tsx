@@ -2335,7 +2335,33 @@ function TopicSettingsPage({
   });
 
   if (!selectedTopic) {
-    return <section className="workspace"><div className="settings-page"><div className="empty-state">请先新建主题</div></div></section>;
+    return (
+      <section className="workspace">
+        <div className="settings-page">
+          <div className="settings-head">
+            <div>
+              <h2>主题设置</h2>
+              <p className="subtitle">当前还没有主题，请先新建一个主题后再配置标签组和标签。</p>
+            </div>
+            <button className="btn primary" onClick={() => setModal({ type: 'topic', mode: 'create' })}>新建主题</button>
+          </div>
+          <div className="empty-state">暂无主题</div>
+        </div>
+
+        {modal && (
+          <SettingsModalView
+            modal={modal}
+            message={message}
+            pending={mutation.isPending}
+            onClose={() => {
+              setModal(undefined);
+              setMessage('');
+            }}
+            onSubmit={(submit) => mutation.mutate(submit)}
+          />
+        )}
+      </section>
+    );
   }
 
   return (
