@@ -13,6 +13,17 @@ export type BizError = {
   status?: number;
 };
 
+function resolveClientType() {
+  if (typeof navigator === 'undefined') return 'pc';
+  const userAgent = navigator.userAgent.toLowerCase();
+  return userAgent.includes('mobile')
+    || userAgent.includes('android')
+    || userAgent.includes('iphone')
+    || userAgent.includes('ipad')
+    ? 'mobile'
+    : 'pc';
+}
+
 export const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8091',
   timeout: 15_000,
@@ -34,6 +45,7 @@ export const apiClient = axios.create({
 
 apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('idea-island-token');
+  config.headers['X-Client-Type'] = resolveClientType();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }

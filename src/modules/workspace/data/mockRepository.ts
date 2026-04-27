@@ -137,6 +137,7 @@ const seedState: MockState = {
       topicId: 1,
       materialType: 'excerpt',
       status: 'COLLECTED',
+      unread: true,
       title: '留存分析：把行为路径拆成可观察事件',
       description: '已收录资料，可作为后续做统计面板时的参考。',
       rawContent:
@@ -163,6 +164,7 @@ const seedState: MockState = {
       topicId: 1,
       materialType: 'social',
       status: 'PENDING_REVIEW',
+      unread: false,
       title: '评论区里关于冷启动的一个反例',
       description: '社交内容，适合后续补充作者、平台和讨论上下文。',
       rawContent: '评论区有人提到，冷启动阶段不要过早追求模板化增长，而要先验证最小承诺是否成立。',
@@ -186,6 +188,7 @@ const seedState: MockState = {
       topicId: 1,
       materialType: 'article',
       status: 'INBOX',
+      unread: true,
       title: '定价页不要只展示套餐，要让用户理解升级动机',
       description: '这段内容适合放进产品增长主题，后续可以和转化漏斗资料一起回看。',
       rawContent:
@@ -213,6 +216,7 @@ const seedState: MockState = {
       topicId: 1,
       materialType: 'input',
       status: 'ARCHIVED',
+      unread: false,
       title: '旧版埋点方案复盘',
       description: '已经沉淀完的历史资料，默认不作为优先处理对象。',
       rawContent: '旧版埋点只覆盖页面访问，缺少关键转化动作，导致漏斗数据无法解释用户阻塞点。',
@@ -278,6 +282,7 @@ function createDemoMaterials(startId: number, count: number): Material[] {
       topicId: 1,
       materialType: types[index % types.length],
       status,
+      unread: status === 'INBOX' || status === 'COLLECTED',
       title: titles[index % titles.length],
       description: '用于验证独立滚动和分页加载的示例资料，向下滚动列表会继续获取下一页。',
       rawContent:
@@ -379,6 +384,7 @@ function filterMaterials(materials: Material[], params: MaterialListParams) {
     .filter((material) => (params.scoreMin != null ? (material.score ?? 0) >= params.scoreMin : true))
     .filter((material) => (params.scoreMax != null ? (material.score ?? 0) <= params.scoreMax : true))
     .filter((material) => matchesTags(material, params.tagFilters))
+    .filter((material) => (params.unreadOnly ? Boolean(material.unread) : true))
     .filter((material) => {
       if (!keyword) return true;
       const haystack = [
@@ -597,6 +603,7 @@ export const mockRepository = {
       topicId: payload.topicId,
       materialType: payload.materialType,
       status: 'INBOX',
+      unread: true,
       title: payload.title || payload.sourceUrl || '未命名资料',
       description: payload.description || '新采集资料，等待后续整理。',
       rawContent: payload.rawContent || payload.description || payload.sourceUrl || '',
@@ -635,13 +642,18 @@ export const mockRepository = {
     return delay(state.materials.find((material) => material.id === id)!);
   },
 
-  async transitionMaterial(id: number, status: MaterialStatus, payload?: Pick<Material, 'score' | 'comment'>) {
+  async transitionMaterial(
+    id: number,
+    status: MaterialStatus,
+    payload?: Pick<Material, 'score' | 'comment'> & { unread?: boolean },
+  ) {
     const state = readState();
     state.materials = state.materials.map((material) =>
       material.id === id
         ? {
             ...material,
             status,
+            unread: payload?.unread ?? (status === 'INBOX' || status === 'COLLECTED'),
             score: payload?.score ?? material.score,
             comment: payload?.comment ?? material.comment,
             updatedAt: new Date().toISOString(),

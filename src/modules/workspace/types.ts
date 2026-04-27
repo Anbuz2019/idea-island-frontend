@@ -52,6 +52,7 @@ export type Material = {
   topicId: number;
   materialType: MaterialType;
   status: MaterialStatus;
+  unread?: boolean;
   title: string;
   description: string;
   rawContent: string;
@@ -81,6 +82,7 @@ export type MaterialListParams = {
   tagFilters?: Record<string, string[]>;
   sortBy?: 'createdAt' | 'score' | 'status' | 'statusAt';
   sortDirection?: 'asc' | 'desc';
+  unreadOnly?: boolean;
   page?: number;
   pageSize?: number;
 };

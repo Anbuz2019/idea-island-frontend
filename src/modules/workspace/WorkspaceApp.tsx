@@ -3,6 +3,7 @@
   BarChart3,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Edit3,
   Inbox,
@@ -72,7 +73,6 @@ import type {
 
 const pageSize = 8;
 const workspacePrefsStorageKey = 'idea-island-workspace-prefs';
-const readMaterialsStorageKey = 'idea-island-read-materials';
 
 const materialTypes: MaterialType[] = ['article', 'social', 'media', 'image', 'excerpt', 'input'];
 
@@ -132,7 +132,14 @@ type WorkspacePrefs = {
   activeTopicId?: number;
   selectedMaterialId?: number;
   topicNavCollapsed?: boolean;
+  filterPanelCollapsed?: Record<string, boolean>;
   filters?: Record<string, WorkspaceFilterPrefs>;
+};
+
+type StatusFilterOption = {
+  value: string;
+  label: string;
+  statuses: MaterialStatus[];
 };
 
 function readWorkspacePrefs(): WorkspacePrefs {
@@ -153,6 +160,7 @@ function saveWorkspacePrefs(update: (current: WorkspacePrefs) => WorkspacePrefs)
 }
 
 function workspaceFilterKey(view: ViewKey, topicId?: number) {
+  if (view === 'search') return `${view}:inline:${topicId ?? 'all'}`;
   return `${view}:${topicId ?? 'all'}`;
 }
 
@@ -167,15 +175,44 @@ function savedWorkspaceView() {
   return view && viewPaths[view] ? view : undefined;
 }
 
-type ReadMaterialRegistry = Record<string, true>;
-
-function readMaterialRegistry(): ReadMaterialRegistry {
-  try {
-    const raw = localStorage.getItem(readMaterialsStorageKey);
-    return raw ? JSON.parse(raw) as ReadMaterialRegistry : {};
-  } catch {
-    return {};
+function viewIcon(view: ViewKey, size = 18) {
+  switch (view) {
+    case 'inbox':
+      return <Inbox size={size} />;
+    case 'library':
+      return <Archive size={size} />;
+    case 'search':
+      return <Search size={size} />;
+    case 'assistant':
+      return <MessageCircle size={size} />;
+    case 'topicSettings':
+      return <Settings size={size} />;
+    case 'stats':
+      return <BarChart3 size={size} />;
+    case 'profile':
+      return <User size={size} />;
+    case 'invalid':
+      return <Trash2 size={size} />;
+    default:
+      return <Inbox size={size} />;
   }
+}
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia(query).matches;
+  });
+
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const listener = () => setMatches(media.matches);
+    listener();
+    media.addEventListener('change', listener);
+    return () => media.removeEventListener('change', listener);
+  }, [query]);
+
+  return matches;
 }
 
 function statusEnteredAt(material: Material) {
@@ -187,16 +224,8 @@ function statusEnteredAt(material: Material) {
   return material.updatedAt || material.createdAt;
 }
 
-function materialReadKey(material: Material) {
-  return `${material.id}:${material.status}:${statusEnteredAt(material)}`;
-}
-
-function canBeUnread(material: Material) {
-  return material.status === 'INBOX' || material.status === 'COLLECTED';
-}
-
-function isMaterialUnread(material: Material, readRegistry: ReadMaterialRegistry) {
-  return canBeUnread(material) && !readRegistry[materialReadKey(material)];
+function isMaterialUnread(material: Material) {
+  return Boolean(material.unread);
 }
 
 function viewFromPath(pathname: string): ViewKey {
@@ -496,6 +525,7 @@ export function WorkspaceApp() {
 
 function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
   const queryClient = useQueryClient();
+  const isMobile = useMediaQuery('(max-width: 640px)');
   const [activeView, setActiveView] = useState<ViewKey>(() => {
     const pathView = viewFromPath(window.location.pathname);
     return window.location.pathname === '/login' ? savedWorkspaceView() ?? pathView : pathView;
@@ -503,7 +533,6 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
   const [activeTopicId, setActiveTopicId] = useState<number>();
   const [selectedSettingsTopicId, setSelectedSettingsTopicId] = useState<number>();
   const [selectedMaterialId, setSelectedMaterialIdState] = useState<number | undefined>();
-  const [readRegistry, setReadRegistry] = useState<ReadMaterialRegistry>(readMaterialRegistry);
   const [captureOpen, setCaptureOpen] = useState(false);
   const [successNotice, setSuccessNotice] = useState<{ id: number; text: string }>();
 
@@ -545,20 +574,46 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
     setSelectedMaterialIdState(id);
   };
 
-  const markMaterialRead = (material: Material) => {
-    if (!canBeUnread(material)) return;
-    const key = materialReadKey(material);
-    setReadRegistry((current) => {
-      if (current[key]) return current;
-      const next = { ...current, [key]: true as const };
-      try {
-        localStorage.setItem(readMaterialsStorageKey, JSON.stringify(next));
-      } catch {
-        // Ignore storage failures; read state is an enhancement.
-      }
-      return next;
-    });
-  };
+  const markReadMutation = useMutation({
+    mutationFn: (material: Material) => workspaceApi.markRead(material.id),
+    onMutate: async (material) => {
+      if (!material.unread) return;
+      const applyMaterialPatch = (current: Material | undefined) => {
+        if (!current || current.id !== material.id) return current;
+        return {
+          ...current,
+          status: current.status === 'INBOX' ? 'PENDING_REVIEW' : current.status,
+          unread: false,
+        } satisfies Material;
+      };
+      queryClient.setQueryData(queryKeys.material(material.id), (current: Material | undefined) => applyMaterialPatch(current));
+      queryClient.setQueriesData(
+        { predicate: (query) => Array.isArray(query.queryKey) && ['inbox', 'materials', 'search'].includes(String(query.queryKey[0])) },
+        (current: { pages?: PageResponse<Material>[] } | undefined) => {
+          if (!current?.pages) return current;
+          return {
+            ...current,
+            pages: current.pages.map((page) => ({
+              ...page,
+              items: page.items.map((item) => applyMaterialPatch(item) ?? item),
+            })),
+          };
+        },
+      );
+
+      const unreadKey = material.status === 'COLLECTED'
+        ? ['sidebar-unread', material.topicId, 'library'] as const
+        : ['sidebar-unread', material.topicId, 'inbox'] as const;
+      queryClient.setQueryData(unreadKey, (current: PageResponse<Material> | undefined) => {
+        if (!current) return current;
+        return {
+          ...current,
+          total: Math.max(current.total - 1, 0),
+          items: current.items.filter((item) => item.id !== material.id),
+        };
+      });
+    },
+  });
 
   const topicsQuery = useQuery({
     queryKey: queryKeys.topics,
@@ -600,9 +655,10 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
           workspaceApi.listInbox({
             topicId: topic.id,
             status: ['INBOX'],
+            unreadOnly: true,
             sortBy: 'statusAt',
             page: 1,
-            pageSize: 100,
+            pageSize: 1,
           }),
       },
       {
@@ -611,9 +667,10 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
           workspaceApi.listMaterials({
             topicId: topic.id,
             status: ['COLLECTED'],
+            unreadOnly: true,
             sortBy: 'statusAt',
             page: 1,
-            pageSize: 100,
+            pageSize: 1,
           }),
       },
     ]),
@@ -624,18 +681,18 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
     topics.forEach((topic, index) => {
       const inbox = topicCountQueries[index * 2]?.data?.total ?? 0;
       const library = topicCountQueries[index * 2 + 1]?.data?.total ?? 0;
-      const unreadInboxItems = unreadCountQueries[index * 2]?.data?.items ?? [];
-      const unreadLibraryItems = unreadCountQueries[index * 2 + 1]?.data?.items ?? [];
+      const unreadInbox = unreadCountQueries[index * 2]?.data?.total ?? 0;
+      const unreadLibrary = unreadCountQueries[index * 2 + 1]?.data?.total ?? 0;
       counts[topic.id] = {
         inbox,
         library,
         total: inbox + library,
-        unreadInbox: unreadInboxItems.filter((material) => isMaterialUnread(material, readRegistry)).length,
-        unreadLibrary: unreadLibraryItems.filter((material) => isMaterialUnread(material, readRegistry)).length,
+        unreadInbox,
+        unreadLibrary,
       };
     });
     return counts;
-  }, [readRegistry, topicCountQueries, topics, unreadCountQueries]);
+  }, [topicCountQueries, topics, unreadCountQueries]);
 
   useEffect(() => {
     if (!topics.length) return;
@@ -662,6 +719,7 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
   const pageTitle = isWorkspaceView && activeTopic
     ? `${activeTopic.name} / ${viewLabels[activeView]}`
     : viewLabels[activeView];
+  const mobilePageTitle = viewLabels[activeView];
 
   return (
     <div className="app">
@@ -681,20 +739,37 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
 
       <main className="main">
         <header className="topbar">
-          <div>
-            <h1>{pageTitle}</h1>
-            <p>{viewDescriptions[activeView]}</p>
+          <div className="topbar-copy">
+            <h1 className={isMobile ? 'mobile-topbar-title' : ''}>
+              {isMobile && <span className="mobile-topbar-icon">{viewIcon(activeView, 18)}</span>}
+              <span>{isMobile ? mobilePageTitle : pageTitle}</span>
+            </h1>
+            {!isMobile && <p>{viewDescriptions[activeView]}</p>}
           </div>
-          <div className="topbar-actions">
-            {(activeView === 'library' || activeView === 'search' || activeView === 'invalid') && (
-              <button className="btn compact ghost" onClick={() => changeView(activeView === 'invalid' ? 'library' : 'invalid')}>
-                {activeView === 'invalid' ? '返回资料库' : '失效资料'}
+          {isMobile ? (
+            isWorkspaceView && activeTopic ? (
+              <MobileTopicSwitcher
+                topics={topics}
+                activeTopicId={activeTopic.id}
+                onTopicSelect={(topicId) => {
+                  setActiveTopicId(topicId);
+                  setSelectedMaterialId(undefined);
+                  saveWorkspacePrefs((current) => ({ ...current, activeTopicId: topicId }));
+                }}
+              />
+            ) : <div />
+          ) : (
+            <div className="topbar-actions">
+              {(activeView === 'library' || activeView === 'search' || activeView === 'invalid') && (
+                <button className="btn compact ghost" onClick={() => changeView(activeView === 'invalid' ? 'library' : 'invalid')}>
+                  {activeView === 'invalid' ? '返回资料库' : '失效资料'}
+                </button>
+              )}
+              <button className="btn primary" onClick={() => setCaptureOpen(true)}>
+                <Plus size={18} /> 采集资料
               </button>
-            )}
-            <button className="btn primary" onClick={() => setCaptureOpen(true)}>
-              <Plus size={18} /> 采集资料
-            </button>
-          </div>
+            </div>
+          )}
         </header>
 
         {activeView === 'topicSettings' ? (
@@ -719,8 +794,11 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
             activeTopic={activeTopic}
             selectedMaterialId={selectedMaterialId}
             onSelectMaterial={setSelectedMaterialId}
-            readRegistry={readRegistry}
-            onReadMaterial={markMaterialRead}
+            onReadMaterial={(material) => {
+              if (isMaterialUnread(material)) {
+                markReadMutation.mutate(material);
+              }
+            }}
             onChanged={invalidateWorkspace}
             onSuccess={notifySuccess}
           />
@@ -729,6 +807,8 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
 
       <MobileBar
         activeView={activeView}
+        inboxUnread={activeTopic ? (topicCounts[activeTopic.id]?.unreadInbox ?? 0) : 0}
+        libraryUnread={activeTopic ? (topicCounts[activeTopic.id]?.unreadLibrary ?? 0) : 0}
         onViewChange={changeView}
         onCapture={() => setCaptureOpen(true)}
       />
@@ -751,6 +831,31 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
       )}
       <SuccessPopup notice={successNotice} onClose={() => setSuccessNotice(undefined)} />
     </div>
+  );
+}
+
+function MobileTopicSwitcher({
+  topics,
+  activeTopicId,
+  onTopicSelect,
+}: {
+  topics: Topic[];
+  activeTopicId?: number;
+  onTopicSelect: (topicId: number) => void;
+}) {
+  if (!topics.length) return null;
+
+  return (
+    <label className="mobile-topic-switcher">
+      <span>
+        <Tags size={14} />
+      </span>
+      <select value={activeTopicId} onChange={(event) => onTopicSelect(Number(event.target.value))}>
+        {topics.map((topic) => (
+          <option key={topic.id} value={topic.id}>{topic.name}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -927,20 +1032,26 @@ function NavButton({
 
 function MobileBar({
   activeView,
+  inboxUnread,
+  libraryUnread,
   onViewChange,
   onCapture,
 }: {
   activeView: ViewKey;
+  inboxUnread: number;
+  libraryUnread: number;
   onViewChange: (view: ViewKey) => void;
   onCapture: () => void;
 }) {
   return (
     <nav className="mobile-bar">
-      <button className={activeView === 'inbox' ? 'active' : ''} onClick={() => onViewChange('inbox')}>收件箱</button>
-      <button className={activeView === 'library' ? 'active' : ''} onClick={() => onViewChange('library')}>资料库</button>
-      <button onClick={onCapture}>采集</button>
-      <button className={activeView === 'search' ? 'active' : ''} onClick={() => onViewChange('search')}>搜索</button>
-      <button className={activeView === 'profile' ? 'active' : ''} onClick={() => onViewChange('profile')}>我的</button>
+      <button className={`${activeView === 'inbox' ? 'active' : ''} ${inboxUnread > 0 ? 'has-unread' : ''}`} onClick={() => onViewChange('inbox')}><span className="mobile-nav-icon"><Inbox size={18} /></span>收件箱</button>
+      <button className={`${activeView === 'library' ? 'active' : ''} ${libraryUnread > 0 ? 'has-unread' : ''}`} onClick={() => onViewChange('library')}><span className="mobile-nav-icon"><Archive size={18} /></span>资料库</button>
+      <button className={activeView === 'search' ? 'active' : ''} onClick={() => onViewChange('search')}><Search size={18} />搜索</button>
+      <button className="mobile-capture-action" onClick={onCapture}><Plus size={20} />采集</button>
+      <button className={activeView === 'assistant' ? 'active' : ''} onClick={() => onViewChange('assistant')}><MessageCircle size={18} />助手</button>
+      <button className={activeView === 'topicSettings' ? 'active' : ''} onClick={() => onViewChange('topicSettings')}><Settings size={18} />主题</button>
+      <button className={activeView === 'profile' ? 'active' : ''} onClick={() => onViewChange('profile')}><User size={18} />个人</button>
     </nav>
   );
 }
@@ -950,7 +1061,6 @@ function WorkspaceView({
   activeTopic,
   selectedMaterialId,
   onSelectMaterial,
-  readRegistry,
   onReadMaterial,
   onChanged,
   onSuccess,
@@ -959,7 +1069,6 @@ function WorkspaceView({
   activeTopic?: Topic;
   selectedMaterialId?: number;
   onSelectMaterial: (id: number | undefined) => void;
-  readRegistry: ReadMaterialRegistry;
   onReadMaterial: (material: Material) => void;
   onChanged: () => void;
   onSuccess: NotifySuccess;
@@ -971,6 +1080,8 @@ function WorkspaceView({
   const [tagFilters, setTagFilters] = useState<Record<string, string[]>>({});
   const [tagMenuOpen, setTagMenuOpen] = useState(false);
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [unreadSessionIds, setUnreadSessionIds] = useState<number[]>([]);
+  const isMobile = useMediaQuery('(max-width: 760px)');
   const filterPrefsKey = workspaceFilterKey(view, activeTopic?.id);
   const skipNextFilterSave = useRef(false);
 
@@ -985,6 +1096,7 @@ function WorkspaceView({
     setSortBy(savedSortBy ?? 'statusAt');
     setTagFilters(saved.tagFilters ?? {});
     setUnreadOnly(saved.unreadOnly ?? false);
+    setUnreadSessionIds([]);
     setTagMenuOpen(false);
   }, [filterPrefsKey]);
 
@@ -1063,11 +1175,60 @@ function WorkspaceView({
     enabled: Boolean(activeTopic?.id),
   });
 
-  const items = flattenPages(query.data);
-  const unreadItemsCount = items.filter((item) => isMaterialUnread(item, readRegistry)).length;
+  const rawItems = flattenPages(query.data);
+  const [topUnreadIds, setTopUnreadIds] = useState<number[]>([]);
+  const wasFetchingRef = useRef(false);
+  const listScopeKey = useMemo(() => JSON.stringify({ view, params }), [params, view]);
+
+  useEffect(() => {
+    setTopUnreadIds(rawItems.filter(isMaterialUnread).map((item) => item.id));
+  }, [listScopeKey]);
+
+  useEffect(() => {
+    if (query.isFetching) {
+      wasFetchingRef.current = true;
+      return;
+    }
+    if (query.isSuccess && wasFetchingRef.current) {
+      setTopUnreadIds(rawItems.filter(isMaterialUnread).map((item) => item.id));
+      wasFetchingRef.current = false;
+    }
+  }, [query.isFetching, query.isSuccess, rawItems]);
+
+  const shouldPinUnread = sortBy !== 'statusAt' && sortBy !== 'score';
+
+  const items = useMemo(() => {
+    if (!shouldPinUnread || !topUnreadIds.length) return rawItems;
+    const unreadOrder = new Map(topUnreadIds.map((id, index) => [id, index]));
+    return [...rawItems].sort((a, b) => {
+      const aUnreadOrder = unreadOrder.get(a.id);
+      const bUnreadOrder = unreadOrder.get(b.id);
+      if (aUnreadOrder == null && bUnreadOrder == null) return 0;
+      if (aUnreadOrder == null) return 1;
+      if (bUnreadOrder == null) return -1;
+      return aUnreadOrder - bUnreadOrder;
+    });
+  }, [rawItems, shouldPinUnread, topUnreadIds]);
+  const unreadItemsCount = unreadOnly ? unreadSessionIds.length : items.filter(isMaterialUnread).length;
+  useEffect(() => {
+    if (!unreadOnly) {
+      setUnreadSessionIds([]);
+      return;
+    }
+    setUnreadSessionIds((current) => {
+      const next = new Set(current);
+      items.forEach((item) => {
+        if (isMaterialUnread(item)) {
+          next.add(item.id);
+        }
+      });
+      return Array.from(next);
+    });
+  }, [items, unreadOnly]);
+
   const visibleItems = useMemo(
-    () => unreadOnly ? items.filter((item) => isMaterialUnread(item, readRegistry)) : items,
-    [items, readRegistry, unreadOnly],
+    () => unreadOnly ? items.filter((item) => unreadSessionIds.includes(item.id)) : items,
+    [items, unreadOnly, unreadSessionIds],
   );
 
   useEffect(() => {
@@ -1099,11 +1260,17 @@ function WorkspaceView({
 
   const selectedTagsCount = Object.values(tagFilters).reduce((sum, values) => sum + values.length, 0);
 
+  const handleUnreadOnlyChange = (value: boolean) => {
+    if (value) {
+      setUnreadSessionIds(items.filter(isMaterialUnread).map((item) => item.id));
+    } else {
+      setUnreadSessionIds([]);
+    }
+    setUnreadOnly(value);
+  };
+
   const selectMaterial = (material: Material) => {
     onSelectMaterial(material.id);
-    if (unreadOnly && isMaterialUnread(material, readRegistry)) {
-      setUnreadOnly(false);
-    }
     onReadMaterial(material);
   };
 
@@ -1138,69 +1305,87 @@ function WorkspaceView({
     });
   };
 
-  const statusOptions: { value: MaterialStatus; label: string }[] =
+  const statusOptions: StatusFilterOption[] =
     view === 'library'
       ? [
-          { value: 'COLLECTED', label: '已收录' },
-          { value: 'ARCHIVED', label: '已归档' },
+          { value: 'COLLECTED', label: '已收录', statuses: ['COLLECTED'] },
+          { value: 'ARCHIVED', label: '已归档', statuses: ['ARCHIVED'] },
         ]
       : view === 'invalid'
-        ? [{ value: 'INVALID', label: '已失效' }]
+        ? [{ value: 'INVALID', label: '已失效', statuses: ['INVALID'] }]
       : view === 'inbox'
         ? []
         : [
-            { value: 'INBOX', label: '收件箱' },
-            { value: 'PENDING_REVIEW', label: '待评价' },
-            { value: 'COLLECTED', label: '已收录' },
-            { value: 'ARCHIVED', label: '已归档' },
-            { value: 'INVALID', label: '已失效' },
+            { value: 'INBOX', label: '收件箱', statuses: ['INBOX', 'PENDING_REVIEW'] },
+            { value: 'COLLECTED', label: '已收录', statuses: ['COLLECTED'] },
+            { value: 'ARCHIVED', label: '已归档', statuses: ['ARCHIVED'] },
+            { value: 'INVALID', label: '已失效', statuses: ['INVALID'] },
           ];
+
+  if (isMobile && selectedId) {
+    return (
+      <section className="workspace mobile-detail-workspace">
+        <div className="mobile-detail-shell">
+          <button className="btn compact ghost mobile-back-button" type="button" onClick={() => onSelectMaterial(undefined)}>
+            <ChevronLeft size={15} /> 返回列表
+          </button>
+          <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="workspace">
       {view === 'search' ? (
         <div className="search-workspace">
-          <FilterPanel
-            keyword={keyword}
-            setKeyword={setKeyword}
-            sortBy={sortBy}
-            setSortBy={setSortBy}
-            typeFilter={typeFilter}
-            toggleType={toggleType}
-            tagGroups={tagGroups}
-            tagFilters={tagFilters}
-            selectedTagsCount={selectedTagsCount}
-            tagMenuOpen={tagMenuOpen}
-            setTagMenuOpen={setTagMenuOpen}
-            toggleTag={toggleTag}
-            showTopicHint
-          />
           <div className="search-body">
-            <MaterialListPane
-              title="搜索结果"
-              items={visibleItems}
-              tagGroups={tagGroups}
-              selectedId={selectedId}
-              readRegistry={readRegistry}
-              statusOptions={statusOptions}
-              statusFilter={statusFilter}
-              setStatusFilter={setStatusFilter}
-              unreadOnly={unreadOnly}
-              unreadCount={unreadItemsCount}
-              onUnreadOnlyChange={setUnreadOnly}
-              loading={query.isLoading}
-              fetchingNext={query.isFetchingNextPage}
-              hasNext={query.hasNextPage}
-              onSelect={selectMaterial}
-              onScroll={onScroll}
-            />
-            <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+            <div className="list-pane">
+              <FilterPanel
+                prefsKey={filterPrefsKey}
+                defaultCollapsed={false}
+                keyword={keyword}
+                setKeyword={setKeyword}
+                sortBy={sortBy}
+                setSortBy={setSortBy}
+                typeFilter={typeFilter}
+                toggleType={toggleType}
+                tagGroups={tagGroups}
+                tagFilters={tagFilters}
+                selectedTagsCount={selectedTagsCount}
+                tagMenuOpen={tagMenuOpen}
+                setTagMenuOpen={setTagMenuOpen}
+                toggleTag={toggleTag}
+                showTopicHint
+              />
+              <MaterialListPane
+                title="搜索结果"
+                items={visibleItems}
+                tagGroups={tagGroups}
+                selectedId={selectedId}
+                statusOptions={statusOptions}
+                statusFilter={statusFilter}
+                setStatusFilter={setStatusFilter}
+                unreadOnly={unreadOnly}
+                unreadCount={unreadItemsCount}
+                onUnreadOnlyChange={handleUnreadOnlyChange}
+                loading={query.isLoading}
+                fetchingNext={query.isFetchingNextPage}
+                hasNext={query.hasNextPage}
+                onSelect={selectMaterial}
+                onScroll={onScroll}
+              />
+            </div>
+            {!isMobile && (
+              <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+            )}
           </div>
         </div>
       ) : (
         <div className="workspace-grid">
           <div className="list-pane">
             <FilterPanel
+              prefsKey={filterPrefsKey}
               keyword={keyword}
               setKeyword={setKeyword}
               sortBy={sortBy}
@@ -1219,13 +1404,12 @@ function WorkspaceView({
               items={visibleItems}
               tagGroups={tagGroups}
               selectedId={selectedId}
-              readRegistry={readRegistry}
               statusOptions={statusOptions}
               statusFilter={statusFilter}
               setStatusFilter={setStatusFilter}
               unreadOnly={unreadOnly}
               unreadCount={unreadItemsCount}
-              onUnreadOnlyChange={setUnreadOnly}
+              onUnreadOnlyChange={handleUnreadOnlyChange}
               loading={query.isLoading}
               fetchingNext={query.isFetchingNextPage}
               hasNext={query.hasNextPage}
@@ -1233,7 +1417,9 @@ function WorkspaceView({
               onScroll={onScroll}
             />
           </div>
-          <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+          {!isMobile && (
+            <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+          )}
         </div>
       )}
     </section>
@@ -1241,6 +1427,7 @@ function WorkspaceView({
 }
 
 function FilterPanel({
+  prefsKey,
   keyword,
   setKeyword,
   sortBy,
@@ -1254,7 +1441,10 @@ function FilterPanel({
   setTagMenuOpen,
   toggleTag,
   showTopicHint,
+  defaultCollapsed = true,
 }: {
+  prefsKey: string;
+  defaultCollapsed?: boolean;
   keyword: string;
   setKeyword: (value: string) => void;
   sortBy: 'createdAt' | 'score' | 'statusAt';
@@ -1269,78 +1459,119 @@ function FilterPanel({
   toggleTag: (group: TagGroup, value: string) => void;
   showTopicHint?: boolean;
 }) {
+  const [collapsed, setCollapsed] = useState(() => readWorkspacePrefs().filterPanelCollapsed?.[prefsKey] ?? defaultCollapsed);
+
+  useEffect(() => {
+    setCollapsed(readWorkspacePrefs().filterPanelCollapsed?.[prefsKey] ?? defaultCollapsed);
+  }, [defaultCollapsed, prefsKey]);
+
+  const summaryParts = [
+    keyword.trim() ? '关键词' : '',
+    typeFilter.length ? `${typeFilter.length} 个类型` : '',
+    selectedTagsCount ? `${selectedTagsCount} 个标签` : '',
+  ].filter(Boolean);
+
+  const toggleCollapsed = () => {
+    setCollapsed((current) => {
+      const next = !current;
+      saveWorkspacePrefs((prefs) => ({
+        ...prefs,
+        filterPanelCollapsed: {
+          ...(prefs.filterPanelCollapsed ?? {}),
+          [prefsKey]: next,
+        },
+      }));
+      return next;
+    });
+  };
+
   return (
     <div className="filter-panel">
-      <div className="filter-row">
-        <input
-          className="input"
-          value={keyword}
-          onChange={(event) => setKeyword(event.target.value)}
-          placeholder="搜索标题、描述、原始内容、评语、来源、链接或标签"
-        />
-        <select className="select" style={{ maxWidth: 170 }} value={sortBy} onChange={(event) => setSortBy(event.target.value as 'createdAt' | 'score' | 'statusAt')}>
-          <option value="statusAt">最近加入</option>
-          <option value="createdAt">最近创建</option>
-          <option value="score">评分优先</option>
-        </select>
-      </div>
-
-      {showTopicHint && <div className="muted" style={{ fontSize: 12 }}>按主题检索，标签条件按当前左侧主题的标签组选择。</div>}
-
-      <div className="filter-row wrap">
-        <span className="muted" style={{ fontSize: 12 }}>资料类型</span>
-        {materialTypes.map((type) => (
-          <button
-            key={type}
-            className={`chip ${typeFilter.includes(type) ? 'active' : ''}`}
-            onClick={() => toggleType(type)}
-          >
-            {materialTypeLabels[type]}
-          </button>
-        ))}
-      </div>
-
-      <div className="filter-row wrap">
-        {selectedTagsCount === 0 ? (
-          <span className="muted" style={{ fontSize: 12 }}>未选择标签条件</span>
-        ) : (
-          tagGroups.flatMap((group) =>
-            (tagFilters[String(group.id)] ?? []).map((value) => (
-              <span key={`${group.id}-${value}`} className="tag-chip" style={tagStyle(group)}>
-                <span className="tag-hash">#</span>{value}
-              </span>
-            )),
-          )
-        )}
-        <button className="btn compact ghost" onClick={() => setTagMenuOpen(!tagMenuOpen)}>添加标签条件</button>
-      </div>
-
-      {tagMenuOpen && (
-        <div className="tag-group-list">
-          {tagGroups.map((group) => (
-            <div className="tag-group-box" key={group.id}>
-              <div className="tag-group-head">
-                <strong>{group.name}</strong>
-                <span>{group.exclusive ? '单选组' : '多选组'}</span>
-              </div>
-              <div className="tag-picker">
-                {group.values.map((tag) => {
-                  const selected = (tagFilters[String(group.id)] ?? []).includes(tag.value);
-                  return (
-                    <button
-                      key={tag.id}
-                      className={`tag-option ${selected ? 'selected' : ''}`}
-                      style={tagStyle(group)}
-                      onClick={() => toggleTag(group, tag.value)}
-                    >
-                      <span className="tag-hash">#</span>{tag.value}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+      <div className="filter-panel-head">
+        <div className="filter-panel-title">
+          <strong>筛选条件</strong>
+          <span>{summaryParts.length ? summaryParts.join(' · ') : '未设置筛选条件'}</span>
         </div>
+        <button type="button" className="btn compact ghost filter-toggle" onClick={toggleCollapsed}>
+          {collapsed ? '展开' : '收起'}
+          {collapsed ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+        </button>
+      </div>
+
+      {!collapsed && (
+        <>
+          <div className="filter-row">
+            <input
+              className="input"
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+              placeholder="搜索标题、描述、原始内容、评语、来源、链接或标签"
+            />
+            <select className="select" style={{ maxWidth: 170 }} value={sortBy} onChange={(event) => setSortBy(event.target.value as 'createdAt' | 'score' | 'statusAt')}>
+              <option value="statusAt">最近加入</option>
+              <option value="createdAt">最近创建</option>
+              <option value="score">评分优先</option>
+            </select>
+          </div>
+
+          {showTopicHint && <div className="muted" style={{ fontSize: 12 }}>按主题检索，标签条件按当前左侧主题的标签组选择。</div>}
+
+          <div className="filter-row wrap">
+            <span className="muted" style={{ fontSize: 12 }}>资料类型</span>
+            {materialTypes.map((type) => (
+              <button
+                key={type}
+                className={`chip ${typeFilter.includes(type) ? 'active' : ''}`}
+                onClick={() => toggleType(type)}
+              >
+                {materialTypeLabels[type]}
+              </button>
+            ))}
+          </div>
+
+          <div className="filter-row wrap">
+            {selectedTagsCount === 0 ? (
+              <span className="muted" style={{ fontSize: 12 }}>未选择标签条件</span>
+            ) : (
+              tagGroups.flatMap((group) =>
+                (tagFilters[String(group.id)] ?? []).map((value) => (
+                  <span key={`${group.id}-${value}`} className="tag-chip" style={tagStyle(group)}>
+                    <span className="tag-hash">#</span>{value}
+                  </span>
+                )),
+              )
+            )}
+            <button className="btn compact ghost" onClick={() => setTagMenuOpen(!tagMenuOpen)}>添加标签条件</button>
+          </div>
+
+          {tagMenuOpen && (
+            <div className="tag-group-list">
+              {tagGroups.map((group) => (
+                <div className="tag-group-box" key={group.id}>
+                  <div className="tag-group-head">
+                    <strong>{group.name}</strong>
+                    <span>{group.exclusive ? '单选组' : '多选组'}</span>
+                  </div>
+                  <div className="tag-picker">
+                    {group.values.map((tag) => {
+                      const selected = (tagFilters[String(group.id)] ?? []).includes(tag.value);
+                      return (
+                        <button
+                          key={tag.id}
+                          className={`tag-option ${selected ? 'selected' : ''}`}
+                          style={tagStyle(group)}
+                          onClick={() => toggleTag(group, tag.value)}
+                        >
+                          <span className="tag-hash">#</span>{tag.value}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1351,7 +1582,6 @@ function MaterialListPane({
   items,
   tagGroups,
   selectedId,
-  readRegistry,
   statusOptions,
   statusFilter,
   setStatusFilter,
@@ -1368,8 +1598,7 @@ function MaterialListPane({
   items: Material[];
   tagGroups: TagGroup[];
   selectedId?: number;
-  readRegistry: ReadMaterialRegistry;
-  statusOptions: { value: MaterialStatus; label: string }[];
+  statusOptions: StatusFilterOption[];
   statusFilter: MaterialStatus[];
   setStatusFilter: (value: MaterialStatus[]) => void;
   unreadOnly: boolean;
@@ -1416,7 +1645,7 @@ function MaterialListPane({
                 material={item}
                 tagGroups={tagGroups}
                 active={item.id === selectedId}
-                unread={isMaterialUnread(item, readRegistry)}
+                unread={isMaterialUnread(item)}
                 onClick={() => onSelect(item)}
               />
             ))}
@@ -1435,11 +1664,14 @@ function StatusSwitchBar({
   value,
   onChange,
 }: {
-  options: { value: MaterialStatus; label: string }[];
+  options: StatusFilterOption[];
   value: MaterialStatus[];
   onChange: (value: MaterialStatus[]) => void;
 }) {
-  const activeKey = value.length === 1 ? value[0] : 'ALL';
+  const activeOption = options.find((option) =>
+    option.statuses.length === value.length && option.statuses.every((status) => value.includes(status)),
+  );
+  const activeKey = activeOption?.value ?? 'ALL';
   const switchItems = [{ value: 'ALL' as const, label: '全部' }, ...options];
 
   return (
@@ -1451,7 +1683,7 @@ function StatusSwitchBar({
             key={option.value}
             type="button"
             className={active ? 'active' : ''}
-            onClick={() => onChange(option.value === 'ALL' ? [] : [option.value])}
+            onClick={() => onChange(option.value === 'ALL' ? [] : ('statuses' in option ? option.statuses : []))}
           >
             {option.label}
           </button>
@@ -1497,18 +1729,23 @@ function MaterialCard({
           </div>
           <h3 className="material-title">{material.title}</h3>
           <p className="material-desc">{clampText(material.description || material.rawContent, 72)}</p>
-          <div className="tag-row">
-            {materialTagsForGroups(material, tagGroups).slice(0, 4).map((tag) => (
-              <TagChip key={`${tag.tagGroupKey}-${tag.tagValue}`} tag={tag} group={groupForTag(tag, tagGroups)} />
-            ))}
+          <div className="material-footer">
+            <div className="tag-row">
+              {materialTagsForGroups(material, tagGroups).map((tag) => (
+                <TagChip key={`${tag.tagGroupKey}-${tag.tagValue}`} tag={tag} group={groupForTag(tag, tagGroups)} />
+              ))}
+            </div>
           </div>
         </div>
-        {(material.status === 'COLLECTED' || material.status === 'ARCHIVED') && (
-          <aside className="material-side">
-            <span className={`score-text ${scoreTone(material.score)}`}>{material.score?.toFixed(1) ?? '-'}</span>
-            {material.comment && <p className="material-comment">{clampText(material.comment, 40)}</p>}
-          </aside>
-        )}
+        <aside className="material-side">
+          {(material.status === 'COLLECTED' || material.status === 'ARCHIVED' || material.score != null) && (
+            <div className="material-score-block">
+              <span className={`score-text ${scoreTone(material.score)}`}>{material.score?.toFixed(1) ?? '-'}</span>
+              {material.comment && <p className="material-comment">{clampText(material.comment, 40)}</p>}
+            </div>
+          )}
+          <span className="material-updated">{shortDate(statusEnteredAt(material))}</span>
+        </aside>
       </div>
     </button>
   );
@@ -2194,14 +2431,14 @@ function CaptureModal({
                   <img className="capture-image-preview" src={payload.coverUrl} alt="图片预览" />
                 ) : (
                   <div className="capture-image-placeholder">
-                    <span>Ctrl+V</span>
+                    <span>图片</span>
                   </div>
                 )}
                 <div className="capture-image-copy">
-                  <strong>{imageFileName || '选择图片或直接粘贴截图'}</strong>
-                  <span>支持 Ctrl+V 粘贴剪贴板图片，也可以选择本地图片文件。</span>
+                  <strong>{imageFileName || '选择图片或粘贴截图'}</strong>
+                  <span>手机可从图库选择，电脑也支持 Ctrl+V 粘贴剪贴板图片。</span>
                   <label className="btn compact ghost capture-file-action">
-                    选择文件
+                    从图库选择
                     <input type="file" accept="image/*" onChange={handleImageUpload} />
                   </label>
                 </div>
@@ -2343,7 +2580,7 @@ function TopicSettingsPage({
               <h2>主题设置</h2>
               <p className="subtitle">当前还没有主题，请先新建一个主题后再配置标签组和标签。</p>
             </div>
-            <button className="btn primary" onClick={() => setModal({ type: 'topic', mode: 'create' })}>新建主题</button>
+            <button className="btn compact primary" onClick={() => setModal({ type: 'topic', mode: 'create' })}>新建主题</button>
           </div>
           <div className="empty-state">暂无主题</div>
         </div>
@@ -2381,9 +2618,9 @@ function TopicSettingsPage({
             ))}
           </div>
           <div className="settings-topic-actions">
-            <button className="btn" onClick={() => setModal({ type: 'topic', mode: 'create' })}>新建主题</button>
-            <button className="btn" onClick={() => setModal({ type: 'topic', mode: 'edit', topic: selectedTopic })}>编辑主题</button>
-            <button className="btn danger" onClick={() => setModal({ type: 'topic', mode: 'delete', topic: selectedTopic })}>删除主题</button>
+            <button className="btn compact" onClick={() => setModal({ type: 'topic', mode: 'create' })}>新建主题</button>
+            <button className="btn compact" onClick={() => setModal({ type: 'topic', mode: 'edit', topic: selectedTopic })}>编辑主题</button>
+            <button className="btn compact danger" onClick={() => setModal({ type: 'topic', mode: 'delete', topic: selectedTopic })}>删除主题</button>
           </div>
         </div>
 
@@ -2392,7 +2629,7 @@ function TopicSettingsPage({
             <h2>{selectedTopic.name}</h2>
             <p className="subtitle">{selectedTopic.description}</p>
           </div>
-          <button className="btn primary" onClick={() => setModal({ type: 'group', mode: 'create' })}>新增标签组</button>
+          <button className="btn compact primary" onClick={() => setModal({ type: 'group', mode: 'create' })}>新增标签组</button>
         </div>
 
         <div className="settings-group-list">

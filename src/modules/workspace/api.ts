@@ -26,8 +26,11 @@ type ApiMaterialDetail = {
     fileKey?: string;
     comment?: string;
     score?: number;
+    unread?: boolean;
     inboxAt?: string;
+    inboxReadAt?: string;
     collectedAt?: string;
+    collectedReadAt?: string;
     archivedAt?: string;
     invalidAt?: string;
     createdAt?: string;
@@ -108,6 +111,7 @@ function mapMaterialDetail(detail: ApiMaterialDetail | null | undefined): Materi
     topicId: material.topicId,
     materialType: (material.materialType || 'input') as MaterialType,
     status: (material.status || 'INBOX') as MaterialStatus,
+    unread: Boolean(material.unread),
     title: material.title || '未命名资料',
     description: material.description || '',
     rawContent: material.rawContent || '',
@@ -315,8 +319,15 @@ export const workspaceApi = {
 
   markRead(id: number): Promise<void> {
     if (shouldUseMockApi()) {
-      void mockRepository.transitionMaterial(id, 'PENDING_REVIEW');
-      return Promise.resolve();
+      return mockRepository.getMaterial(id).then((material) => {
+        if (material.status === 'INBOX') {
+          return mockRepository.transitionMaterial(id, 'PENDING_REVIEW').then(() => undefined);
+        }
+        if (material.status === 'COLLECTED') {
+          return mockRepository.transitionMaterial(id, 'COLLECTED', { unread: false }).then(() => undefined);
+        }
+        return undefined;
+      });
     }
     return api.post(`/api/v1/materials/${id}/mark-read`).then(() => undefined);
   },

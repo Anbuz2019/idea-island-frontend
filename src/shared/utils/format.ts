@@ -19,7 +19,16 @@ export const statusLabels: Record<MaterialStatus, string> = {
 };
 
 export function shortDate(value: string) {
-  return dayjs(value).format('MM-DD HH:mm');
+  const date = dayjs(value);
+  if (!date.isValid()) return '-';
+
+  const today = dayjs().startOf('day');
+  const targetDay = date.startOf('day');
+  const dayDiff = today.diff(targetDay, 'day');
+
+  if (dayDiff <= 0) return `今天 ${date.format('HH:mm')}`;
+  if (dayDiff === 1) return `昨天 ${date.format('HH:mm')}`;
+  return `${dayDiff}天前`;
 }
 
 export function scoreTone(score?: number) {
