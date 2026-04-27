@@ -54,8 +54,9 @@ import {
   saveThemeColor,
   type AppearanceMode,
 } from '../../shared/theme/themeColor';
-import { workspaceApi } from './api';
+import { DEFAULT_MATERIAL_COVER_URL, workspaceApi } from './api';
 import { authApi } from './authApi';
+import { XingxianLive2DWidget } from './live2d/XingxianLive2DWidget';
 import type {
   Material,
   MaterialListParams,
@@ -75,6 +76,19 @@ const pageSize = 8;
 const workspacePrefsStorageKey = 'idea-island-workspace-prefs';
 
 const materialTypes: MaterialType[] = ['article', 'social', 'media', 'image', 'excerpt', 'input'];
+
+type InterfaceStyle = 'classic' | 'glass' | 'anime';
+
+const animeWallpapers = Array.from(
+  { length: 18 },
+  (_, index) => `/anime-wallpapers/wallpaper-${String(index + 1).padStart(2, '0')}.png`,
+);
+const animeWallpaperSessionSeed = Math.floor(Math.random() * 10000);
+
+function animeWallpaperForSeed(seed: number, salt = 0) {
+  const index = Math.abs((seed * 37 + salt * 101 + animeWallpaperSessionSeed) % animeWallpapers.length);
+  return animeWallpapers[index];
+}
 
 const themePresets = [
   { name: '岛屿绿', color: DEFAULT_THEME_COLOR },
@@ -132,6 +146,7 @@ type WorkspacePrefs = {
   activeTopicId?: number;
   selectedMaterialId?: number;
   topicNavCollapsed?: boolean;
+  interfaceStyle?: InterfaceStyle;
   filterPanelCollapsed?: Record<string, boolean>;
   filters?: Record<string, WorkspaceFilterPrefs>;
 };
@@ -157,6 +172,24 @@ function saveWorkspacePrefs(update: (current: WorkspacePrefs) => WorkspacePrefs)
   } catch {
     // Ignore storage failures; the workspace should remain usable.
   }
+}
+
+function readInterfaceStyle(): InterfaceStyle {
+  const saved = readWorkspacePrefs().interfaceStyle;
+  return saved === 'glass' || saved === 'classic' || saved === 'anime' ? saved : 'classic';
+}
+
+function applyInterfaceStyle(value: InterfaceStyle) {
+  if (typeof document !== 'undefined') {
+    document.documentElement.dataset.style = value;
+  }
+  return value;
+}
+
+function saveInterfaceStyle(value: InterfaceStyle) {
+  const next = applyInterfaceStyle(value);
+  saveWorkspacePrefs((current) => ({ ...current, interfaceStyle: next }));
+  return next;
 }
 
 function workspaceFilterKey(view: ViewKey, topicId?: number) {
@@ -213,6 +246,24 @@ function useMediaQuery(query: string) {
   }, [query]);
 
   return matches;
+}
+
+function useAnimeStyleActive() {
+  const [active, setActive] = useState(() => document.documentElement.dataset.style === 'anime');
+
+  useEffect(() => {
+    const update = () => setActive(document.documentElement.dataset.style === 'anime');
+    update();
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-style'] });
+    return () => observer.disconnect();
+  }, []);
+
+  return active;
+}
+
+function isDefaultMaterialCover(url?: string) {
+  return url === DEFAULT_MATERIAL_COVER_URL;
 }
 
 function statusEnteredAt(material: Material) {
@@ -362,9 +413,12 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
     <main className="login-page">
       <section className="login-visual">
         <div className="brand login-brand">
-          <div className="brand-mark">II</div>
+          <div className="brand-mark" aria-hidden="true">
+            <span className="brand-mark-island" />
+            <span className="brand-mark-spark" />
+          </div>
           <div>
-            <strong>Idea Island</strong>
+            <strong>灵感岛</strong>
             <span>碎片灵感工作台</span>
           </div>
         </div>
@@ -446,9 +500,12 @@ function AuthLoginPage({ onLogin }: { onLogin: (token: string, nickname?: string
     <main className="login-page">
       <section className="login-visual">
         <div className="brand login-brand">
-          <div className="brand-mark">II</div>
+          <div className="brand-mark" aria-hidden="true">
+            <span className="brand-mark-island" />
+            <span className="brand-mark-spark" />
+          </div>
           <div>
-            <strong>Idea Island</strong>
+            <strong>灵感岛</strong>
             <span>碎片灵感工作台</span>
           </div>
         </div>
@@ -539,6 +596,10 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
   const notifySuccess: NotifySuccess = (text) => {
     setSuccessNotice({ id: Date.now(), text });
   };
+
+  useEffect(() => {
+    applyInterfaceStyle(readInterfaceStyle());
+  }, []);
 
   useEffect(() => {
     if (window.location.pathname === '/login') {
@@ -829,6 +890,11 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
           }}
         />
       )}
+      <XingxianLive2DWidget
+        viewLabel={viewLabels[activeView]}
+        captureOpen={captureOpen}
+        noticeText={successNotice?.text}
+      />
       <SuccessPopup notice={successNotice} onClose={() => setSuccessNotice(undefined)} />
     </div>
   );
@@ -939,9 +1005,12 @@ function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark">II</div>
+        <div className="brand-mark" aria-hidden="true">
+          <span className="brand-mark-island" />
+          <span className="brand-mark-spark" />
+        </div>
         <div>
-          <strong>Idea Island</strong>
+          <strong>灵感岛</strong>
           <span>海量碎片灵感工作台</span>
         </div>
       </div>
@@ -1713,7 +1782,14 @@ function MaterialCard({
     enabled: Boolean(coverKey),
     staleTime: 5 * 60 * 1000,
   });
-  const thumbnailUrl = material.meta.thumbnailUrl || coverQuery.data?.fileUrl || material.coverUrl;
+  const animeStyleActive = useAnimeStyleActive();
+  const resolvedCoverUrl = material.meta.thumbnailUrl || coverQuery.data?.fileUrl || material.coverUrl;
+  const hasOriginalCover = Boolean(
+    material.meta.thumbnailUrl || coverKey || (material.coverUrl && !isDefaultMaterialCover(material.coverUrl)),
+  );
+  const thumbnailUrl = animeStyleActive && !hasOriginalCover
+    ? animeWallpaperForSeed(material.id, 3)
+    : resolvedCoverUrl;
 
   return (
     <button className={`material-card ${active ? 'active' : ''} ${unread ? 'unread' : ''}`} onClick={onClick}>
@@ -1831,6 +1907,9 @@ function MaterialDetailPanel({
   });
   const displayCoverUrl = imageUrlQuery.data?.fileUrl || material?.coverUrl;
   const displayCoverTone = useCoverTone(displayCoverUrl);
+  const animeStyleActive = useAnimeStyleActive();
+  const detailWallpaperUrl = animeStyleActive ? animeWallpaperForSeed(material?.id ?? 0, 3) : undefined;
+  const detailHeroCoverUrl = animeStyleActive && isDefaultMaterialCover(displayCoverUrl) ? undefined : displayCoverUrl;
 
   const updateMutation = useMutation({
     mutationFn: async () => {
@@ -1910,7 +1989,14 @@ function MaterialDetailPanel({
   });
 
   if (!material) {
-    return <section className="detail"><div className="empty-state">请选择一条资料</div></section>;
+    return (
+      <section
+        className="detail detail-empty"
+        style={detailWallpaperUrl ? { '--detail-wallpaper': `url("${detailWallpaperUrl}")` } as React.CSSProperties : undefined}
+      >
+        <div className="empty-state">请选择一条资料</div>
+      </section>
+    );
   }
 
   const updateField = (field: keyof UpdateMaterialPayload, value: string | number) => {
@@ -1958,10 +2044,13 @@ function MaterialDetailPanel({
         <span>{toast.text}</span>
       </div>
     )}
-    <section className="detail">
+    <section
+      className="detail"
+      style={detailWallpaperUrl ? { '--detail-wallpaper': `url("${detailWallpaperUrl}")` } as React.CSSProperties : undefined}
+    >
       <div
-        className={`detail-hero tone-${displayCoverTone}`}
-        style={{ '--cover-url': `url(${displayCoverUrl})` } as React.CSSProperties}
+        className={`detail-hero tone-${displayCoverTone} ${detailHeroCoverUrl ? '' : 'no-cover'}`}
+        style={detailHeroCoverUrl ? { '--cover-url': `url("${detailHeroCoverUrl}")` } as React.CSSProperties : undefined}
       >
         <div className="detail-toolbar">
           <StatusChip status={material.status} />
@@ -2905,6 +2994,7 @@ function ProfileDashboard({
   const [profileMessage, setProfileMessage] = useState('');
   const [themeColor, setThemeColor] = useState(readStoredThemeColor);
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(readStoredAppearanceMode);
+  const [interfaceStyle, setInterfaceStyle] = useState<InterfaceStyle>(readInterfaceStyle);
 
   const changeThemeColor = (value: string, notify = false) => {
     const nextColor = saveThemeColor(value);
@@ -2915,6 +3005,11 @@ function ProfileDashboard({
   const changeAppearanceMode = (value: AppearanceMode) => {
     setAppearanceMode(saveAppearanceMode(value));
     onSuccess(value === 'dark' ? '已切换暗夜模式' : '已切换白天模式');
+  };
+
+  const changeInterfaceStyle = (value: InterfaceStyle) => {
+    setInterfaceStyle(saveInterfaceStyle(value));
+    onSuccess(value === 'anime' ? '已切换二次元风格' : value === 'glass' ? '已切换通透风格' : '已切换标准风格');
   };
 
   const profileQuery = useQuery({
@@ -3115,6 +3210,29 @@ function ProfileDashboard({
                 onClick={() => changeAppearanceMode('dark')}
               >
                 暗夜护眼
+              </button>
+            </div>
+            <div className="appearance-toggle style-toggle" aria-label="界面风格">
+              <button
+                type="button"
+                className={interfaceStyle === 'classic' ? 'active' : ''}
+                onClick={() => changeInterfaceStyle('classic')}
+              >
+                标准
+              </button>
+              <button
+                type="button"
+                className={interfaceStyle === 'glass' ? 'active' : ''}
+                onClick={() => changeInterfaceStyle('glass')}
+              >
+                通透
+              </button>
+              <button
+                type="button"
+                className={interfaceStyle === 'anime' ? 'active' : ''}
+                onClick={() => changeInterfaceStyle('anime')}
+              >
+                二次元
               </button>
             </div>
             <div className="theme-control-grid">

@@ -79,7 +79,7 @@ type ApiTagGroupResponse = {
   sortOrder: number;
 };
 
-const fallbackCover =
+export const DEFAULT_MATERIAL_COVER_URL =
   'https://images.unsplash.com/photo-1455390582262-044cdead277a?auto=format&fit=crop&w=1200&q=80';
 
 function paramsWithTagFilters(params: MaterialListParams) {
@@ -120,7 +120,7 @@ function mapMaterialDetail(detail: ApiMaterialDetail | null | undefined): Materi
     fileKey: material.fileKey || '',
     score: material.score,
     comment: material.comment || '',
-    coverUrl: fallbackCover,
+    coverUrl: DEFAULT_MATERIAL_COVER_URL,
     createdAt: material.createdAt || new Date().toISOString(),
     updatedAt: material.updatedAt || material.createdAt || new Date().toISOString(),
     inboxAt: material.inboxAt,
