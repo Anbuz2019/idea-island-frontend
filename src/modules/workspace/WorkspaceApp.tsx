@@ -45,6 +45,7 @@ import {
   clampText,
   materialTypeLabels,
   scoreTone,
+  serverTimeMs,
   shortDate,
   statusLabels,
 } from '../../shared/utils/format';
@@ -224,7 +225,7 @@ function errorMessage(error: unknown) {
 function buildMaterialHistory(material: Material) {
   const statusRecords = [...(material.statusHistory ?? [])]
     .filter((record) => record.occurredAt)
-    .sort((a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime());
+    .sort((a, b) => serverTimeMs(a.occurredAt) - serverTimeMs(b.occurredAt));
   const fallback = statusRecords.length > 0 ? [] : [{
     status: 'CREATED',
     label: '创建',

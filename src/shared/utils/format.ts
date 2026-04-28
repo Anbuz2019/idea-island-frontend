@@ -1,5 +1,10 @@
 import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
 import type { MaterialStatus, MaterialType } from '../../modules/workspace/types';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 export const materialTypeLabels: Record<MaterialType, string> = {
   article: '文章',
@@ -18,11 +23,28 @@ export const statusLabels: Record<MaterialStatus, string> = {
   INVALID: '已失效',
 };
 
+const serverLocalTimeZone = 'Asia/Shanghai';
+const timezonePattern = /(Z|[+-]\d{2}:?\d{2})$/i;
+
+export function parseServerTime(value?: string) {
+  if (!value) return dayjs(Number.NaN);
+  const normalized = value.trim();
+  if (!normalized) return dayjs(Number.NaN);
+  return timezonePattern.test(normalized)
+    ? dayjs(normalized).tz(serverLocalTimeZone)
+    : dayjs.tz(normalized, serverLocalTimeZone);
+}
+
+export function serverTimeMs(value?: string) {
+  const date = parseServerTime(value);
+  return date.isValid() ? date.valueOf() : 0;
+}
+
 export function shortDate(value: string) {
-  const date = dayjs(value);
+  const date = parseServerTime(value);
   if (!date.isValid()) return '-';
 
-  const today = dayjs().startOf('day');
+  const today = dayjs().tz(serverLocalTimeZone).startOf('day');
   const targetDay = date.startOf('day');
   const dayDiff = today.diff(targetDay, 'day');
 

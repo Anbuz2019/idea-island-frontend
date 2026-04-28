@@ -1,3 +1,4 @@
+import { serverTimeMs } from '../../../shared/utils/format';
 import type {
   Material,
   MaterialListParams,
@@ -405,12 +406,12 @@ function filterMaterials(materials: Material[], params: MaterialListParams) {
       if (params.sortBy === 'score') return ((a.score ?? 0) - (b.score ?? 0)) * direction;
       if (params.sortBy === 'status') return a.status.localeCompare(b.status) * direction;
       if (params.sortBy === 'statusAt') {
-        return (new Date(statusEnteredAt(a)).getTime() - new Date(statusEnteredAt(b)).getTime()) * direction;
+        return (serverTimeMs(statusEnteredAt(a)) - serverTimeMs(statusEnteredAt(b))) * direction;
       }
       if (params.sortBy === 'updatedAt') {
-        return (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()) * direction;
+        return (serverTimeMs(a.updatedAt) - serverTimeMs(b.updatedAt)) * direction;
       }
-      return (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) * direction;
+      return (serverTimeMs(a.createdAt) - serverTimeMs(b.createdAt)) * direction;
     });
 }
 
