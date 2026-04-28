@@ -2,6 +2,7 @@
   Archive,
   BarChart3,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -38,6 +39,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
+import { readAuthToken, removeAuthToken, saveAuthToken } from '../../shared/api/client';
 import { queryKeys } from '../../shared/api/queryKeys';
 import {
   clampText,
@@ -47,20 +49,36 @@ import {
   statusLabels,
 } from '../../shared/utils/format';
 import {
-  DEFAULT_THEME_COLOR,
-  readStoredAppearanceMode,
   readStoredThemeColor,
-  saveAppearanceMode,
-  saveThemeColor,
-  type AppearanceMode,
 } from '../../shared/theme/themeColor';
 import { DEFAULT_MATERIAL_COVER_URL, workspaceApi } from './api';
 import { authApi } from './authApi';
+import { MarkdownView } from './components/MarkdownView';
+import { FilterPanel } from './components/filters/FilterPanel';
+import { MaterialListPane, type StatusFilterOption } from './components/materials/MaterialListPane';
+import { ProfileDashboard } from './components/profile/ProfileDashboard';
+import { useMascotSummary, type TopicSidebarCount } from './hooks/useMascotSummary';
 import { XingxianLive2DWidget } from './live2d/XingxianLive2DWidget';
+import {
+  flattenPages,
+  isDefaultMaterialCover,
+  isMaterialUnread,
+  materialCoverKey,
+  tagStyle,
+} from './utils/materialView';
+import {
+  applyInterfaceStyle,
+  readInterfaceStyle,
+  readWorkspacePrefs,
+  saveWorkspacePrefs,
+  workspaceFilterKey,
+  type WorkspaceFilterPrefs,
+} from './utils/workspacePrefs';
 import type {
   Material,
   MaterialListParams,
   MaterialStatus,
+  MaterialSortBy,
   MaterialTag,
   MaterialType,
   PageResponse,
@@ -73,11 +91,8 @@ import type {
 } from './types';
 
 const pageSize = 8;
-const workspacePrefsStorageKey = 'idea-island-workspace-prefs';
 
 const materialTypes: MaterialType[] = ['article', 'social', 'media', 'image', 'excerpt', 'input'];
-
-type InterfaceStyle = 'classic' | 'glass' | 'anime';
 
 const animeWallpapers = Array.from(
   { length: 18 },
@@ -89,32 +104,6 @@ function animeWallpaperForSeed(seed: number, salt = 0) {
   const index = Math.abs((seed * 37 + salt * 101 + animeWallpaperSessionSeed) % animeWallpapers.length);
   return animeWallpapers[index];
 }
-
-const themePresets = [
-  { name: '岛屿绿', color: DEFAULT_THEME_COLOR },
-  { name: '海蓝', color: '#2563eb' },
-  { name: '青蓝', color: '#0891b2' },
-  { name: '紫罗兰', color: '#7c3aed' },
-  { name: '玫红', color: '#be123c' },
-];
-
-const changelogEntries = [
-  {
-    version: '1.0.1',
-    date: '2026-04-28',
-    title: '使用体验升级',
-    items: [
-      '资料采集、收件箱、资料库、搜索和主题设置流程更加完整。',
-      '资料列表支持未读提示、分页加载、评分排序、状态筛选和标签筛选。',
-      '资料详情支持编辑标题、描述、来源、链接、原始内容、评语、评分和标签。',
-      '评语支持 Markdown 输入、预览和展示；资料列表会自动提取 Markdown 标题作为评语摘要。',
-      '移动端优化了底部导航、筛选面板、采集弹窗、详情滑动和图片放大预览。',
-      '新增暗夜模式、通透风格、二次元风格和主题色自定义。',
-      '新增沐沐看板助手，支持拖拽、缩放、互动对话、工作近况、休息提醒和成就提示。',
-      '图片资料、封面展示、默认封面和二次元壁纸体验更加稳定。',
-    ],
-  },
-];
 
 const viewLabels: Record<ViewKey, string> = {
   inbox: '收件箱',
@@ -148,72 +137,6 @@ const viewPaths: Record<ViewKey, string> = {
   assistant: '/app/assistant',
   profile: '/app/profile',
 };
-
-type WorkspaceFilterPrefs = {
-  keyword?: string;
-  sortBy?: 'createdAt' | 'score' | 'statusAt';
-  statusFilter?: MaterialStatus[];
-  typeFilter?: MaterialType[];
-  tagFilters?: Record<string, string[]>;
-  unreadOnly?: boolean;
-};
-
-type WorkspacePrefs = {
-  schemaVersion?: number;
-  activeView?: ViewKey;
-  activeTopicId?: number;
-  selectedMaterialId?: number;
-  topicNavCollapsed?: boolean;
-  interfaceStyle?: InterfaceStyle;
-  filterPanelCollapsed?: Record<string, boolean>;
-  filters?: Record<string, WorkspaceFilterPrefs>;
-};
-
-type StatusFilterOption = {
-  value: string;
-  label: string;
-  statuses: MaterialStatus[];
-};
-
-function readWorkspacePrefs(): WorkspacePrefs {
-  try {
-    const raw = localStorage.getItem(workspacePrefsStorageKey);
-    return raw ? JSON.parse(raw) as WorkspacePrefs : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveWorkspacePrefs(update: (current: WorkspacePrefs) => WorkspacePrefs) {
-  try {
-    localStorage.setItem(workspacePrefsStorageKey, JSON.stringify({ ...update(readWorkspacePrefs()), schemaVersion: 2 }));
-  } catch {
-    // Ignore storage failures; the workspace should remain usable.
-  }
-}
-
-function readInterfaceStyle(): InterfaceStyle {
-  const saved = readWorkspacePrefs().interfaceStyle;
-  return saved === 'glass' || saved === 'classic' || saved === 'anime' ? saved : 'classic';
-}
-
-function applyInterfaceStyle(value: InterfaceStyle) {
-  if (typeof document !== 'undefined') {
-    document.documentElement.dataset.style = value;
-  }
-  return value;
-}
-
-function saveInterfaceStyle(value: InterfaceStyle) {
-  const next = applyInterfaceStyle(value);
-  saveWorkspacePrefs((current) => ({ ...current, interfaceStyle: next }));
-  return next;
-}
-
-function workspaceFilterKey(view: ViewKey, topicId?: number) {
-  if (view === 'search') return `${view}:inline:${topicId ?? 'all'}`;
-  return `${view}:${topicId ?? 'all'}`;
-}
 
 function shortTopicName(name?: string) {
   if (!name) return '';
@@ -280,129 +203,6 @@ function useAnimeStyleActive() {
   return active;
 }
 
-function isDefaultMaterialCover(url?: string) {
-  return url === DEFAULT_MATERIAL_COVER_URL;
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function renderInlineMarkdown(value: string) {
-  return escapeHtml(value)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-}
-
-function renderMarkdown(value?: string | null) {
-  const text = value?.trim();
-  if (!text) return '<p>尚未评价</p>';
-
-  const lines = text.replace(/\r\n/g, '\n').split('\n');
-  const html: string[] = [];
-  let inCode = false;
-  let codeLines: string[] = [];
-  let listItems: string[] = [];
-
-  const flushList = () => {
-    if (!listItems.length) return;
-    html.push(`<ul>${listItems.join('')}</ul>`);
-    listItems = [];
-  };
-
-  const flushCode = () => {
-    html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
-    codeLines = [];
-  };
-
-  lines.forEach((line) => {
-    if (line.trim().startsWith('```')) {
-      if (inCode) {
-        flushCode();
-        inCode = false;
-      } else {
-        flushList();
-        inCode = true;
-      }
-      return;
-    }
-
-    if (inCode) {
-      codeLines.push(line);
-      return;
-    }
-
-    const trimmed = line.trim();
-    if (!trimmed) {
-      flushList();
-      return;
-    }
-    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
-    if (heading) {
-      flushList();
-      const level = heading[1].length + 3;
-      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
-      return;
-    }
-    const list = /^[-*]\s+(.+)$/.exec(trimmed);
-    if (list) {
-      listItems.push(`<li>${renderInlineMarkdown(list[1])}</li>`);
-      return;
-    }
-    const quote = /^>\s+(.+)$/.exec(trimmed);
-    if (quote) {
-      flushList();
-      html.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
-      return;
-    }
-    flushList();
-    html.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
-  });
-
-  flushList();
-  if (inCode) flushCode();
-  return html.join('');
-}
-
-function MarkdownView({ value, emptyText = '尚未评价' }: { value?: string | null; emptyText?: string }) {
-  return (
-    <div
-      className="markdown-view"
-      dangerouslySetInnerHTML={{ __html: renderMarkdown(value?.trim() ? value : emptyText) }}
-    />
-  );
-}
-
-function commentPreviewText(comment?: string | null) {
-  const text = comment?.trim();
-  if (!text) return '';
-  const firstLine = text.split(/\r?\n/)[0].trim();
-  if (firstLine.startsWith('#')) {
-    return firstLine.replace(/^#+\s*/, '');
-  }
-  return clampText(text, 40);
-}
-
-function statusEnteredAt(material: Material) {
-  if (material.status === 'INBOX') return material.inboxAt || material.createdAt;
-  if (material.status === 'PENDING_REVIEW') return material.updatedAt || material.createdAt;
-  if (material.status === 'COLLECTED') return material.collectedAt || material.updatedAt || material.createdAt;
-  if (material.status === 'ARCHIVED') return material.archivedAt || material.updatedAt || material.createdAt;
-  if (material.status === 'INVALID') return material.invalidAt || material.updatedAt || material.createdAt;
-  return material.updatedAt || material.createdAt;
-}
-
-function isMaterialUnread(material: Material) {
-  return Boolean(material.unread);
-}
-
 function viewFromPath(pathname: string): ViewKey {
   if (pathname.includes('/library')) return 'library';
   if (pathname.includes('/invalid')) return 'invalid';
@@ -414,52 +214,6 @@ function viewFromPath(pathname: string): ViewKey {
   return 'inbox';
 }
 
-function rgba(hex: string, alpha: number) {
-  const normalized = hex.replace('#', '');
-  const value = normalized.length === 3
-    ? normalized.split('').map((part) => part + part).join('')
-    : normalized;
-  const numeric = Number.parseInt(value, 16);
-  const r = (numeric >> 16) & 255;
-  const g = (numeric >> 8) & 255;
-  const b = numeric & 255;
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function tagStyle(group?: TagGroup) {
-  if (!group?.color) {
-    return {
-      '--tag-fg': 'var(--theme)',
-      '--tag-bg': 'rgba(var(--theme-rgb), 0.045)',
-      '--tag-border': 'rgba(var(--theme-rgb), 0.15)',
-    } as React.CSSProperties;
-  }
-  const color = group.color;
-  return {
-    '--tag-fg': color,
-    '--tag-bg': rgba(color, 0.045),
-    '--tag-border': rgba(color, 0.15),
-  } as React.CSSProperties;
-}
-
-function groupForTag(tag: MaterialTag, groups: TagGroup[]) {
-  return groups.find((group) => String(group.id) === tag.tagGroupKey);
-}
-
-function materialTagsForGroups(material: Material, groups: TagGroup[]) {
-  return material.tags.filter((tag) => groups.some((group) => String(group.id) === tag.tagGroupKey));
-}
-
-function materialCoverKey(material: Material) {
-  return material.materialType === 'image'
-    ? material.fileKey || material.meta.thumbnailKey
-    : material.meta.thumbnailKey;
-}
-
-function flattenPages<T>(data?: { pages: PageResponse<T>[] }) {
-  return data?.pages.flatMap((page) => page.items) ?? [];
-}
-
 function errorMessage(error: unknown) {
   if (error && typeof error === 'object' && 'message' in error) {
     return String((error as { message: string }).message);
@@ -467,13 +221,50 @@ function errorMessage(error: unknown) {
   return '操作失败';
 }
 
-type TopicSidebarCount = {
-  inbox: number;
-  library: number;
-  total: number;
-  unreadInbox: number;
-  unreadLibrary: number;
-};
+function buildMaterialHistory(material: Material) {
+  const statusRecords = [...(material.statusHistory ?? [])]
+    .filter((record) => record.occurredAt)
+    .sort((a, b) => new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime());
+  const fallback = statusRecords.length > 0 ? [] : [{
+    status: 'CREATED',
+    label: '创建',
+    occurredAt: material.createdAt,
+  }];
+
+  return [...fallback, ...statusRecords]
+    .filter((record) => record.occurredAt)
+    .map((record) => ({
+      key: `status-${record.status}-${record.occurredAt}`,
+      status: record.status,
+      title: statusActionLabel(record.status, record.label),
+      occurredAt: record.occurredAt,
+    }));
+}
+
+function statusActionLabel(status?: string, label?: string) {
+  if (status === 'CREATED' || status === 'INBOX') return '创建';
+  if (status === 'PENDING_REVIEW') return '待评价';
+  if (status === 'COLLECTED') return '收录';
+  if (status === 'ARCHIVED') return '归档';
+  if (status === 'INVALID') return '失效';
+  return label?.replace(/^已/, '') || '变更';
+}
+
+function StatusTimelineIcon({ status }: { status?: string }) {
+  if (status === 'COLLECTED') return <Check size={15} />;
+  if (status === 'ARCHIVED') return <Archive size={13} />;
+  if (status === 'INVALID') return <X size={13} />;
+  if (status === 'PENDING_REVIEW') return <Edit3 size={13} />;
+  return <Inbox size={13} />;
+}
+
+function StatusChipIcon({ status }: { status: MaterialStatus }) {
+  if (status === 'COLLECTED') return <CheckCircle2 className="status-icon-collected" size={17} />;
+  if (status === 'ARCHIVED') return <Archive size={12} />;
+  if (status === 'INVALID') return <X size={12} />;
+  if (status === 'PENDING_REVIEW') return <Edit3 size={12} />;
+  return <Inbox size={12} />;
+}
 
 type NotifySuccess = (text: string) => void;
 
@@ -680,10 +471,10 @@ function AuthLoginPage({ onLogin }: { onLogin: (token: string, nickname?: string
 }
 
 export function WorkspaceApp() {
-  const [authed, setAuthed] = useState(() => Boolean(localStorage.getItem('idea-island-token')));
+  const [authed, setAuthed] = useState(() => Boolean(readAuthToken()));
 
   const login = (token: string, nickname?: string) => {
-    localStorage.setItem('idea-island-token', token);
+    saveAuthToken(token);
     if (nickname) localStorage.setItem('idea-island-nickname', nickname);
     const nextView = savedWorkspaceView() ?? 'inbox';
     window.history.replaceState(null, '', viewPaths[nextView]);
@@ -692,7 +483,7 @@ export function WorkspaceApp() {
 
   const logout = () => {
     void authApi.logout().catch(() => undefined);
-    localStorage.removeItem('idea-island-token');
+    removeAuthToken();
     setAuthed(false);
     window.history.replaceState(null, '', '/login');
   };
@@ -890,55 +681,18 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
   }, [topics]);
 
   const activeTopic = topics.find((topic) => topic.id === activeTopicId) ?? topics[0];
-  const activeCounts = activeTopic ? topicCounts[activeTopic.id] : undefined;
   const mascotMaterialQuery = useQuery({
     queryKey: queryKeys.material(selectedMaterialId),
     queryFn: () => workspaceApi.getMaterial(selectedMaterialId!),
     enabled: Boolean(selectedMaterialId),
     staleTime: 30_000,
   });
-  const mascotSummary = useMemo(() => {
-    const total = topics.reduce(
-      (summary, topic) => {
-        const count = topicCounts[topic.id] ?? {
-          inbox: 0,
-          library: 0,
-          total: topic.materialCount,
-          unreadInbox: 0,
-          unreadLibrary: 0,
-        };
-        return {
-          inbox: summary.inbox + count.inbox,
-          library: summary.library + count.library,
-          total: summary.total + count.total,
-          unreadInbox: summary.unreadInbox + count.unreadInbox,
-          unreadLibrary: summary.unreadLibrary + count.unreadLibrary,
-        };
-      },
-      { inbox: 0, library: 0, total: 0, unreadInbox: 0, unreadLibrary: 0 },
-    );
-    return {
-      topicName: activeTopic?.name,
-      topicCount: topics.length,
-      activeInbox: activeCounts?.inbox ?? 0,
-      activeLibrary: activeCounts?.library ?? 0,
-      activeUnread: (activeCounts?.unreadInbox ?? 0) + (activeCounts?.unreadLibrary ?? 0),
-      totalMaterials: total.total,
-      totalInbox: total.inbox,
-      totalLibrary: total.library,
-      totalUnread: total.unreadInbox + total.unreadLibrary,
-    };
-  }, [activeCounts, activeTopic?.name, topicCounts, topics]);
-  const mascotMaterial = mascotMaterialQuery.data;
-  const mascotMaterialSummary = mascotMaterial ? {
-    id: mascotMaterial.id,
-    title: mascotMaterial.title,
-    status: mascotMaterial.status,
-    score: mascotMaterial.score,
-    tagCount: mascotMaterial.tags.filter((tag) => tag.tagType !== 'SYSTEM').length,
-    hasComment: Boolean(mascotMaterial.comment?.trim()),
-    hasDescription: Boolean(mascotMaterial.description?.trim()),
-  } : undefined;
+  const { workspaceSummary: mascotSummary, materialSummary: mascotMaterialSummary } = useMascotSummary({
+    activeTopic,
+    topics,
+    topicCounts,
+    selectedMaterial: mascotMaterialQuery.data,
+  });
 
   const openTopicSettings = () => {
     changeView('topicSettings');
@@ -1317,7 +1071,7 @@ function WorkspaceView({
   const [statusFilter, setStatusFilter] = useState<MaterialStatus[]>([]);
   const [typeFilter, setTypeFilter] = useState<MaterialType[]>([]);
   const [keyword, setKeyword] = useState('');
-  const [sortBy, setSortBy] = useState<'createdAt' | 'score' | 'statusAt'>('statusAt');
+  const [sortBy, setSortBy] = useState<Exclude<MaterialSortBy, 'status'>>('statusAt');
   const [tagFilters, setTagFilters] = useState<Record<string, string[]>>({});
   const [tagMenuOpen, setTagMenuOpen] = useState(false);
   const [unreadOnly, setUnreadOnly] = useState(false);
@@ -1329,9 +1083,13 @@ function WorkspaceView({
   useEffect(() => {
     const prefs = readWorkspacePrefs();
     const saved = prefs.filters?.[filterPrefsKey] ?? {};
-    const savedSortBy = prefs.schemaVersion === 2 ? saved.sortBy : saved.sortBy === 'createdAt' ? 'statusAt' : saved.sortBy;
+    const hasSavedStatusFilter = Object.prototype.hasOwnProperty.call(saved, 'statusFilter');
+    const defaultStatusFilter: MaterialStatus[] = view === 'library' ? ['COLLECTED'] : [];
+    const validSorts: Exclude<MaterialSortBy, 'status'>[] = ['statusAt', 'updatedAt', 'createdAt', 'score'];
+    const migratedSortBy = prefs.schemaVersion === 2 ? saved.sortBy : saved.sortBy === 'createdAt' ? 'statusAt' : saved.sortBy;
+    const savedSortBy = migratedSortBy && validSorts.includes(migratedSortBy) ? migratedSortBy : 'statusAt';
     skipNextFilterSave.current = true;
-    setStatusFilter(saved.statusFilter ?? []);
+    setStatusFilter(hasSavedStatusFilter ? (saved.statusFilter ?? []) : defaultStatusFilter);
     setTypeFilter(saved.typeFilter ?? []);
     setKeyword(saved.keyword ?? '');
     setSortBy(savedSortBy ?? 'statusAt');
@@ -1369,6 +1127,7 @@ function WorkspaceView({
   });
 
   const tagGroups = tagGroupsQuery.data ?? [];
+  const animeStyleActive = useAnimeStyleActive();
 
   const params = useMemo<MaterialListParams>(() => {
     const base: MaterialListParams = {
@@ -1437,7 +1196,7 @@ function WorkspaceView({
     }
   }, [query.isFetching, query.isSuccess, rawItems]);
 
-  const shouldPinUnread = sortBy !== 'statusAt' && sortBy !== 'score';
+  const shouldPinUnread = sortBy !== 'statusAt' && sortBy !== 'updatedAt' && sortBy !== 'score';
 
   const items = useMemo(() => {
     if (!shouldPinUnread || !topUnreadIds.length) return rawItems;
@@ -1617,6 +1376,8 @@ function WorkspaceView({
                 hasNext={query.hasNextPage}
                 onSelect={selectMaterial}
                 onScroll={onScroll}
+                animeStyleActive={animeStyleActive}
+                animeFallbackCover={(material) => animeWallpaperForSeed(material.id, 3)}
               />
             </div>
             {!isMobile && (
@@ -1659,6 +1420,8 @@ function WorkspaceView({
               hasNext={query.hasNextPage}
               onSelect={selectMaterial}
               onScroll={onScroll}
+              animeStyleActive={animeStyleActive}
+              animeFallbackCover={(material) => animeWallpaperForSeed(material.id, 3)}
             />
           </div>
           {!isMobile && (
@@ -1670,348 +1433,11 @@ function WorkspaceView({
   );
 }
 
-function FilterPanel({
-  prefsKey,
-  keyword,
-  setKeyword,
-  sortBy,
-  setSortBy,
-  typeFilter,
-  toggleType,
-  tagGroups,
-  tagFilters,
-  selectedTagsCount,
-  tagMenuOpen,
-  setTagMenuOpen,
-  toggleTag,
-  showTopicHint,
-  defaultCollapsed = true,
-}: {
-  prefsKey: string;
-  defaultCollapsed?: boolean;
-  keyword: string;
-  setKeyword: (value: string) => void;
-  sortBy: 'createdAt' | 'score' | 'statusAt';
-  setSortBy: (value: 'createdAt' | 'score' | 'statusAt') => void;
-  typeFilter: MaterialType[];
-  toggleType: (type: MaterialType) => void;
-  tagGroups: TagGroup[];
-  tagFilters: Record<string, string[]>;
-  selectedTagsCount: number;
-  tagMenuOpen: boolean;
-  setTagMenuOpen: (value: boolean) => void;
-  toggleTag: (group: TagGroup, value: string) => void;
-  showTopicHint?: boolean;
-}) {
-  const [collapsed, setCollapsed] = useState(() => readWorkspacePrefs().filterPanelCollapsed?.[prefsKey] ?? defaultCollapsed);
-
-  useEffect(() => {
-    setCollapsed(readWorkspacePrefs().filterPanelCollapsed?.[prefsKey] ?? defaultCollapsed);
-  }, [defaultCollapsed, prefsKey]);
-
-  const summaryParts = [
-    keyword.trim() ? '关键词' : '',
-    typeFilter.length ? `${typeFilter.length} 个类型` : '',
-    selectedTagsCount ? `${selectedTagsCount} 个标签` : '',
-  ].filter(Boolean);
-
-  const toggleCollapsed = () => {
-    setCollapsed((current) => {
-      const next = !current;
-      saveWorkspacePrefs((prefs) => ({
-        ...prefs,
-        filterPanelCollapsed: {
-          ...(prefs.filterPanelCollapsed ?? {}),
-          [prefsKey]: next,
-        },
-      }));
-      return next;
-    });
-  };
-
-  return (
-    <div className="filter-panel">
-      <div className="filter-panel-head">
-        <div className="filter-panel-title">
-          <strong>筛选条件</strong>
-          <span>{summaryParts.length ? summaryParts.join(' · ') : '未设置筛选条件'}</span>
-        </div>
-        <button type="button" className="btn compact ghost filter-toggle" onClick={toggleCollapsed}>
-          {collapsed ? '展开' : '收起'}
-          {collapsed ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-        </button>
-      </div>
-
-      {!collapsed && (
-        <>
-          <div className="filter-row">
-            <input
-              className="input"
-              value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
-              placeholder="搜索标题、描述、原始内容、评语、来源、链接或标签"
-            />
-            <select className="select" style={{ maxWidth: 170 }} value={sortBy} onChange={(event) => setSortBy(event.target.value as 'createdAt' | 'score' | 'statusAt')}>
-              <option value="statusAt">最近加入</option>
-              <option value="createdAt">最近创建</option>
-              <option value="score">评分优先</option>
-            </select>
-          </div>
-
-          {showTopicHint && <div className="muted" style={{ fontSize: 12 }}>按主题检索，标签条件按当前左侧主题的标签组选择。</div>}
-
-          <div className="filter-row wrap">
-            <span className="muted" style={{ fontSize: 12 }}>资料类型</span>
-            {materialTypes.map((type) => (
-              <button
-                key={type}
-                className={`chip ${typeFilter.includes(type) ? 'active' : ''}`}
-                onClick={() => toggleType(type)}
-              >
-                {materialTypeLabels[type]}
-              </button>
-            ))}
-          </div>
-
-          <div className="filter-row wrap">
-            {selectedTagsCount === 0 ? (
-              <span className="muted" style={{ fontSize: 12 }}>未选择标签条件</span>
-            ) : (
-              tagGroups.flatMap((group) =>
-                (tagFilters[String(group.id)] ?? []).map((value) => (
-                  <span key={`${group.id}-${value}`} className="tag-chip" style={tagStyle(group)}>
-                    <span className="tag-hash">#</span>{value}
-                  </span>
-                )),
-              )
-            )}
-            <button className="btn compact ghost" onClick={() => setTagMenuOpen(!tagMenuOpen)}>添加标签条件</button>
-          </div>
-
-          {tagMenuOpen && (
-            <div className="tag-group-list">
-              {tagGroups.map((group) => (
-                <div className="tag-group-box" key={group.id}>
-                  <div className="tag-group-head">
-                    <strong>{group.name}</strong>
-                    <span>{group.exclusive ? '单选组' : '多选组'}</span>
-                  </div>
-                  <div className="tag-picker">
-                    {group.values.map((tag) => {
-                      const selected = (tagFilters[String(group.id)] ?? []).includes(tag.value);
-                      return (
-                        <button
-                          key={tag.id}
-                          className={`tag-option ${selected ? 'selected' : ''}`}
-                          style={tagStyle(group)}
-                          onClick={() => toggleTag(group, tag.value)}
-                        >
-                          <span className="tag-hash">#</span>{tag.value}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-function MaterialListPane({
-  title,
-  items,
-  tagGroups,
-  selectedId,
-  statusOptions,
-  statusFilter,
-  setStatusFilter,
-  unreadOnly,
-  unreadCount,
-  totalCount,
-  onUnreadOnlyChange,
-  loading,
-  fetchingNext,
-  hasNext,
-  onSelect,
-  onScroll,
-}: {
-  title: string;
-  items: Material[];
-  tagGroups: TagGroup[];
-  selectedId?: number;
-  statusOptions: StatusFilterOption[];
-  statusFilter: MaterialStatus[];
-  setStatusFilter: (value: MaterialStatus[]) => void;
-  unreadOnly: boolean;
-  unreadCount: number;
-  totalCount: number;
-  onUnreadOnlyChange: (value: boolean) => void;
-  loading: boolean;
-  fetchingNext: boolean;
-  hasNext: boolean;
-  onSelect: (material: Material) => void;
-  onScroll: (event: UIEvent<HTMLDivElement>) => void;
-}) {
-  return (
-    <section className="list-pane">
-      {statusOptions.length > 1 && (
-        <StatusSwitchBar
-          options={statusOptions}
-          value={statusFilter}
-          onChange={setStatusFilter}
-        />
-      )}
-      <div className="list-toolbar">
-        <h2>{title}</h2>
-        <div className="list-toolbar-actions">
-          <button
-            type="button"
-            className={`unread-filter ${unreadOnly ? 'active' : ''}`}
-            onClick={() => onUnreadOnlyChange(!unreadOnly)}
-            title={unreadOnly ? '切换为全部资料' : '只查看未读资料'}
-          >
-            {unreadOnly ? `未读 ${unreadCount} 条` : `全部 ${totalCount} 条`}
-          </button>
-        </div>
-      </div>
-      <div className="list-scroll" onScroll={onScroll}>
-        {loading ? (
-          <div className="load-state">加载中...</div>
-        ) : items.length === 0 ? (
-          <div className="empty-state">暂无资料</div>
-        ) : (
-          <div className="material-list">
-            {items.map((item) => (
-              <MaterialCard
-                key={item.id}
-                material={item}
-                tagGroups={tagGroups}
-                active={item.id === selectedId}
-                unread={isMaterialUnread(item)}
-                onClick={() => onSelect(item)}
-              />
-            ))}
-            <div className="load-state">
-              {fetchingNext ? '正在加载下一页...' : hasNext ? '继续下滑加载更多' : `已加载全部 ${unreadOnly ? items.length : totalCount} 条`}
-            </div>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function StatusSwitchBar({
-  options,
-  value,
-  onChange,
-}: {
-  options: StatusFilterOption[];
-  value: MaterialStatus[];
-  onChange: (value: MaterialStatus[]) => void;
-}) {
-  const activeOption = options.find((option) =>
-    option.statuses.length === value.length && option.statuses.every((status) => value.includes(status)),
-  );
-  const activeKey = activeOption?.value ?? 'ALL';
-  const switchItems = [{ value: 'ALL' as const, label: '全部' }, ...options];
-
-  return (
-    <div className="status-switch" aria-label="状态筛选">
-      {switchItems.map((option) => {
-        const active = option.value === activeKey || (option.value === 'ALL' && value.length === 0);
-        return (
-          <button
-            key={option.value}
-            type="button"
-            className={active ? 'active' : ''}
-            onClick={() => onChange(option.value === 'ALL' ? [] : ('statuses' in option ? option.statuses : []))}
-          >
-            {option.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function MaterialCard({
-  material,
-  tagGroups,
-  active,
-  unread,
-  onClick,
-}: {
-  material: Material;
-  tagGroups: TagGroup[];
-  active: boolean;
-  unread: boolean;
-  onClick: () => void;
-}) {
-  const coverKey = materialCoverKey(material);
-  const coverQuery = useQuery({
-    queryKey: ['file-url', coverKey],
-    queryFn: () => workspaceApi.resolveFile(coverKey!),
-    enabled: Boolean(coverKey),
-    staleTime: 5 * 60 * 1000,
-  });
-  const animeStyleActive = useAnimeStyleActive();
-  const resolvedCoverUrl = material.meta.thumbnailUrl || coverQuery.data?.fileUrl || material.coverUrl;
-  const hasOriginalCover = Boolean(
-    material.meta.thumbnailUrl || coverKey || (material.coverUrl && !isDefaultMaterialCover(material.coverUrl)),
-  );
-  const thumbnailUrl = animeStyleActive && !hasOriginalCover
-    ? animeWallpaperForSeed(material.id, 3)
-    : resolvedCoverUrl;
-
-  return (
-    <button className={`material-card ${active ? 'active' : ''} ${unread ? 'unread' : ''}`} onClick={onClick}>
-      <img className="material-thumb" alt="" src={thumbnailUrl} />
-      <div className="material-content">
-        <div className="material-main">
-          <div className="material-meta-line">
-            {unread && <span className="unread-dot" aria-label="未读" />}
-            <span>{materialTypeLabels[material.materialType]}</span>
-            <span>{material.source || material.meta.sourcePlatform || '未知来源'}</span>
-            <StatusChip status={material.status} />
-            {unread && <span className="unread-label">未读</span>}
-          </div>
-          <h3 className="material-title">{material.title}</h3>
-          <p className="material-desc">{clampText(material.description || material.rawContent, 72)}</p>
-          <div className="material-footer">
-            <div className="tag-row">
-              {materialTagsForGroups(material, tagGroups).map((tag) => (
-                <TagChip key={`${tag.tagGroupKey}-${tag.tagValue}`} tag={tag} group={groupForTag(tag, tagGroups)} />
-              ))}
-            </div>
-          </div>
-        </div>
-        <aside className="material-side">
-          {(material.status === 'COLLECTED' || material.status === 'ARCHIVED' || material.score != null) && (
-            <div className="material-score-block">
-              <span className={`score-text ${scoreTone(material.score)}`}>{material.score?.toFixed(1) ?? '-'}</span>
-              {material.comment && <p className="material-comment">{commentPreviewText(material.comment)}</p>}
-            </div>
-          )}
-          <span className="material-updated">{shortDate(statusEnteredAt(material))}</span>
-        </aside>
-      </div>
-    </button>
-  );
-}
-
 function StatusChip({ status }: { status: MaterialStatus }) {
-  return <span className="status-chip">{statusLabels[status]}</span>;
-}
-
-function TagChip({ tag, group }: { tag: MaterialTag; group?: TagGroup }) {
   return (
-    <span className="tag-chip" style={tagStyle(group)}>
-      <span className="tag-hash">#</span>{tag.tagValue}
+    <span className="status-chip">
+      <StatusChipIcon status={status} />
+      {statusLabels[status]}
     </span>
   );
 }
@@ -2047,6 +1473,7 @@ function MaterialDetailPanel({
   const [commentPreview, setCommentPreview] = useState(false);
   const [collectCommentPreview, setCollectCommentPreview] = useState(false);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(true);
   const [toast, setToast] = useState<{ tone: 'success' | 'error'; text: string }>();
 
   const showToast = (tone: 'success' | 'error', text: string) => {
@@ -2074,6 +1501,7 @@ function MaterialDetailPanel({
     setCommentPreview(false);
     setCollectCommentPreview(false);
     setImagePreviewOpen(false);
+    setHistoryOpen(true);
     setCollectScore(material.score ?? 8);
     setCollectComment(material.comment ?? '');
     setTagSelection(material.tags.filter((tag) => tag.tagType !== 'SYSTEM'));
@@ -2168,6 +1596,8 @@ function MaterialDetailPanel({
       showToast('error', `收录失败：${text}`);
     },
   });
+
+  const historyEntries = material ? buildMaterialHistory(material) : [];
 
   if (!material) {
     return (
@@ -2350,11 +1780,8 @@ function MaterialDetailPanel({
                 .map((tag) => tag.tagValue);
               if (!editing && activeValues.length === 0) return null;
               return (
-                <div className="tag-group-box" key={group.id}>
-                  <div className="tag-group-head">
-                    <strong>{group.name}</strong>
-                    <span>{group.exclusive ? '单选' : '多选'}</span>
-                  </div>
+                <div className="tag-group-box detail-tag-group-box" key={group.id}>
+                  <strong className="detail-tag-group-name">{group.name}</strong>
                   <div className="tag-picker">
                     {editing
                       ? group.values.map((tag) => (
@@ -2373,11 +1800,39 @@ function MaterialDetailPanel({
                           </span>
                         ))}
                   </div>
+                  <span className="detail-tag-group-mode">{group.exclusive ? '单选' : '多选'}</span>
                 </div>
               );
             })}
           </div>
         </div>
+
+        {!editing && (
+          <div className="change-history-section">
+            <button
+              type="button"
+              className="change-history-toggle"
+              onClick={() => setHistoryOpen((current) => !current)}
+              aria-expanded={historyOpen}
+            >
+              状态变更历史
+              <span>{historyOpen ? '收起' : `${historyEntries.length} 条`}</span>
+            </button>
+            {historyOpen && (
+              <div className="status-timeline">
+                {historyEntries.map((entry) => (
+                  <div className="status-timeline-item" key={entry.key}>
+                    <span className={`status-timeline-icon status-${entry.status}`}>
+                      <StatusTimelineIcon status={entry.status} />
+                    </span>
+                    <strong>{entry.title}</strong>
+                    <time>{shortDate(entry.occurredAt)}</time>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {!editing && (
           <div className="filter-row wrap">
@@ -3177,434 +2632,3 @@ function AssistantPlaceholder() {
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function ProfileDashboard({
-  topics,
-  topicCounts,
-  onLogout,
-  onSuccess,
-}: {
-  topics: Topic[];
-  topicCounts: Record<number, TopicSidebarCount>;
-  onLogout: () => void;
-  onSuccess: NotifySuccess;
-}) {
-  const [isVip, setIsVip] = useState(() => localStorage.getItem('idea-island-vip') === 'true');
-  const [profileForm, setProfileForm] = useState({ nickname: '', note: '' });
-  const [profileMessage, setProfileMessage] = useState('');
-  const [changelogOpen, setChangelogOpen] = useState(false);
-  const [themeColor, setThemeColor] = useState(readStoredThemeColor);
-  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(readStoredAppearanceMode);
-  const [interfaceStyle, setInterfaceStyle] = useState<InterfaceStyle>(readInterfaceStyle);
-
-  const changeThemeColor = (value: string, notify = false) => {
-    const nextColor = saveThemeColor(value);
-    setThemeColor(nextColor);
-    if (notify) onSuccess('主题色已更新');
-  };
-
-  const changeAppearanceMode = (value: AppearanceMode) => {
-    setAppearanceMode(saveAppearanceMode(value));
-    onSuccess(value === 'dark' ? '已切换暗夜模式' : '已切换白天模式');
-  };
-
-  const changeInterfaceStyle = (value: InterfaceStyle) => {
-    setInterfaceStyle(saveInterfaceStyle(value));
-    onSuccess(value === 'anime' ? '已切换二次元风格' : value === 'glass' ? '已切换通透风格' : '已切换标准风格');
-  };
-
-  const profileQuery = useQuery({
-    queryKey: ['user-profile'],
-    queryFn: authApi.me,
-  });
-  const userStatsQuery = useQuery({
-    queryKey: ['user-stats'],
-    queryFn: authApi.stats,
-  });
-  const saveProfileMutation = useMutation({
-    mutationFn: () => authApi.updateMe({ nickname: profileForm.nickname }),
-    onSuccess: (profile) => {
-      setProfileForm((current) => ({
-        ...current,
-        nickname: profile.nickname || profile.username || '',
-      }));
-      setProfileMessage('已保存');
-      onSuccess('个人资料已保存');
-    },
-    onError: (error) => setProfileMessage(errorMessage(error)),
-  });
-
-  useEffect(() => {
-    const profile = profileQuery.data;
-    if (!profile) return;
-    setProfileForm({
-      nickname: profile.nickname || profile.username || '',
-      note: localStorage.getItem('idea-island-profile-note') || '',
-    });
-  }, [profileQuery.data]);
-
-  const totals = topics.reduce(
-    (summary, topic) => {
-      const count = topicCounts[topic.id] ?? {
-        inbox: 0,
-        library: topic.materialCount,
-        total: topic.materialCount,
-        unreadInbox: 0,
-        unreadLibrary: 0,
-      };
-      return {
-        inbox: summary.inbox + count.inbox,
-        library: summary.library + count.library,
-        total: summary.total + count.total,
-      };
-    },
-    { inbox: 0, library: 0, total: 0 },
-  );
-  const collectedRatio = totals.total ? Math.round((totals.library / totals.total) * 100) : 0;
-  const vipLimit = isVip ? 100 : 20;
-  const usedRatio = Math.min(100, Math.round((totals.total / vipLimit) * 100));
-  const primaryTopic = topics
-    .map((topic) => ({ topic, count: topicCounts[topic.id]?.total ?? topic.materialCount }))
-    .sort((a, b) => b.count - a.count)[0]?.topic;
-  const profile = profileQuery.data;
-  const displayName = profileForm.nickname || profile?.nickname || profile?.username || '未命名用户';
-  const displayAccount = profile?.email || profile?.phone || profile?.username || '-';
-  const realTopicCount = userStatsQuery.data?.topicCount ?? topics.length;
-  const realMaterialCount = userStatsQuery.data?.materialCount ?? totals.total;
-
-  return (
-    <section className="workspace">
-      <div className="profile-page">
-        <section className="profile-hero">
-          <div className="profile-identity">
-            <div className="profile-avatar large">
-              <User size={30} />
-            </div>
-            <div>
-              <div className="profile-name-row">
-                <h2>{displayName}</h2>
-                <span className={`vip-badge ${isVip ? 'active' : ''}`}>{isVip ? 'VIP' : '普通用户'}</span>
-              </div>
-              <p>{displayAccount}</p>
-              <p className="profile-note">{profileForm.note || '尚未填写个人说明'}</p>
-            </div>
-          </div>
-          <button className="btn danger compact" onClick={onLogout}>
-            <LogOut size={15} /> 退出登录
-          </button>
-        </section>
-
-        <section className="profile-metrics">
-          <MetricCard label="主题" value={realTopicCount} />
-          <MetricCard label="资料" value={realMaterialCount} />
-          <MetricCard label="待处理" value={totals.inbox} />
-          <MetricCard label="已沉淀" value={totals.library} />
-          <MetricCard label="沉淀比例" value={`${collectedRatio}%`} />
-        </section>
-
-        <div className="profile-main-grid">
-          <section className="profile-card profile-form-card">
-            <div className="section-title-row">
-              <h3>个人资料</h3>
-              <button
-                className="btn compact ghost"
-                disabled={saveProfileMutation.isPending}
-                onClick={() => {
-                  localStorage.setItem('idea-island-profile-note', profileForm.note);
-                  saveProfileMutation.mutate();
-                }}
-              >
-                保存
-              </button>
-            </div>
-            <div className="form-grid">
-              <label className="form-row">
-                <span className="field-label">昵称</span>
-                <input
-                  className="input"
-                  value={profileForm.nickname}
-                  onChange={(event) => setProfileForm((current) => ({ ...current, nickname: event.target.value }))}
-                />
-              </label>
-              <label className="form-row">
-                <span className="field-label">邮箱</span>
-                <input className="input" value={profile?.email || ''} disabled />
-              </label>
-              <label className="form-row">
-                <span className="field-label">一句话说明</span>
-                <input
-                  className="input"
-                  value={profileForm.note}
-                  onChange={(event) => setProfileForm((current) => ({ ...current, note: event.target.value }))}
-                  placeholder="用于自己识别这个账号的备注"
-                />
-              </label>
-              {profile?.phone && (
-                <label className="form-row">
-                  <span className="field-label">手机</span>
-                  <input className="input" value={profile.phone} disabled />
-                </label>
-              )}
-              {profileMessage && (
-                <span className="muted" style={{ color: profileMessage === '已保存' ? 'var(--theme)' : 'var(--rose)' }}>
-                  {profileMessage}
-                </span>
-              )}
-            </div>
-          </section>
-
-          <section className={`profile-card vip-panel ${isVip ? 'active' : ''}`}>
-            <div className="section-title-row">
-              <div>
-                <h3>会员能力</h3>
-                <p className="subtitle">{isVip ? '已开通 VIP，容量与高级能力已解锁。' : '普通用户，可升级解锁更高容量。'}</p>
-              </div>
-              <span className={`vip-badge ${isVip ? 'active' : ''}`}>{isVip ? 'VIP' : '普通'}</span>
-            </div>
-            <div className="capacity-row">
-              <span>资料容量</span>
-              <strong>{totals.total} / {vipLimit}</strong>
-            </div>
-            <div className="capacity-bar">
-              <span style={{ width: `${usedRatio}%` }} />
-            </div>
-            <div className="vip-feature-list clean">
-              <span>更多主题</span>
-              <span>更大容量</span>
-              <span>高级统计</span>
-              <span>优先体验新能力</span>
-            </div>
-            <button
-              className={isVip ? 'btn compact ghost' : 'btn compact primary'}
-              onClick={() => {
-                const next = !isVip;
-                localStorage.setItem('idea-island-vip', String(next));
-                setIsVip(next);
-                onSuccess(next ? 'VIP 已开通' : '已切换为普通用户');
-              }}
-            >
-              {isVip ? '切换为普通用户预览' : '升级 VIP'}
-            </button>
-          </section>
-
-          <section className="profile-card theme-panel">
-            <div className="section-title-row">
-              <div>
-                <h3>界面主题</h3>
-                <p className="subtitle">切换主题色和暗夜模式，夜间浏览会降低背景亮度和眩光。</p>
-              </div>
-              <button className="btn compact ghost" onClick={() => changeThemeColor(DEFAULT_THEME_COLOR, true)}>
-                恢复默认
-              </button>
-            </div>
-            <div className="appearance-toggle" aria-label="明暗模式">
-              <button
-                type="button"
-                className={appearanceMode === 'light' ? 'active' : ''}
-                onClick={() => changeAppearanceMode('light')}
-              >
-                白天
-              </button>
-              <button
-                type="button"
-                className={appearanceMode === 'dark' ? 'active' : ''}
-                onClick={() => changeAppearanceMode('dark')}
-              >
-                暗夜护眼
-              </button>
-            </div>
-            <div className="appearance-toggle style-toggle" aria-label="界面风格">
-              <button
-                type="button"
-                className={interfaceStyle === 'classic' ? 'active' : ''}
-                onClick={() => changeInterfaceStyle('classic')}
-              >
-                标准
-              </button>
-              <button
-                type="button"
-                className={interfaceStyle === 'glass' ? 'active' : ''}
-                onClick={() => changeInterfaceStyle('glass')}
-              >
-                通透
-              </button>
-              <button
-                type="button"
-                className={interfaceStyle === 'anime' ? 'active' : ''}
-                onClick={() => changeInterfaceStyle('anime')}
-              >
-                二次元
-              </button>
-            </div>
-            <div className="theme-control-grid">
-              <label className="form-row">
-                <span className="field-label">主题色</span>
-                <div className="color-control">
-                  <input
-                    type="color"
-                    value={themeColor}
-                    onChange={(event) => changeThemeColor(event.target.value)}
-                    onBlur={() => onSuccess('主题色已更新')}
-                  />
-                  <strong>{themeColor}</strong>
-                </div>
-              </label>
-              <div className="theme-swatches" aria-label="常用主题色">
-                {themePresets.map((preset) => (
-                  <button
-                    key={preset.color}
-                    type="button"
-                    className={themeColor === preset.color ? 'active' : ''}
-                    style={{ '--swatch-color': preset.color } as React.CSSProperties}
-                    onClick={() => changeThemeColor(preset.color, true)}
-                    title={preset.name}
-                    aria-label={`切换为${preset.name}`}
-                  />
-                ))}
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <section className="profile-card">
-          <div className="section-title-row">
-            <h3>主题沉淀</h3>
-            <span className="subtitle">当前重点：{primaryTopic?.name ?? '-'}</span>
-          </div>
-          <div className="topic-stat-list modern">
-            {topics.map((topic) => {
-              const count = topicCounts[topic.id] ?? {
-                inbox: 0,
-                library: topic.materialCount,
-                total: topic.materialCount,
-              };
-              const progress = count.total ? Math.round((count.library / count.total) * 100) : 0;
-              return (
-                <div className="topic-stat-row" key={topic.id}>
-                  <div>
-                    <strong>{topic.name}</strong>
-                    <div className="topic-progress"><span style={{ width: `${progress}%` }} /></div>
-                  </div>
-                  <span>收件箱 {count.inbox}</span>
-                  <span>资料库 {count.library}</span>
-                  <span>总计 {count.total}</span>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className={`profile-card changelog-card ${changelogOpen ? 'open' : ''}`}>
-          <button
-            type="button"
-            className="changelog-summary"
-            onClick={() => setChangelogOpen((current) => !current)}
-            aria-expanded={changelogOpen}
-          >
-            <div>
-              <h3>更新日志</h3>
-              <p className="subtitle">记录当前前端版本的主要变化。</p>
-            </div>
-            <span className="changelog-summary-action">
-              {changelogOpen ? '收起' : '展开'}
-              {changelogOpen ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
-            </span>
-          </button>
-          {changelogOpen && (
-            <div className="changelog-list">
-              {changelogEntries.map((entry) => (
-                <article className="changelog-entry" key={entry.version}>
-                  <div className="changelog-version">
-                    <span>{entry.version}</span>
-                    <strong>{entry.title}</strong>
-                    <em>{entry.date}</em>
-                  </div>
-                  <ul>
-                    {entry.items.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-    </section>
-  );
-}
-
-function ProfilePage({ topics, onLogout }: { topics: Topic[]; onLogout: () => void }) {
-  const totalMaterials = topics.reduce((sum, topic) => sum + topic.materialCount, 0);
-
-  return (
-    <section className="workspace">
-      <div className="settings-page">
-        <div className="settings-head">
-          <div>
-            <h2>我的</h2>
-            <p className="subtitle">账号资料、使用统计和本地开发配置。</p>
-          </div>
-          <button className="btn danger" onClick={onLogout}>
-            <LogOut size={16} /> 退出登录
-          </button>
-        </div>
-
-        <div className="profile-grid">
-          <section className="profile-card main-profile">
-            <div className="profile-avatar"><User size={28} /></div>
-            <div>
-              <h3>Alex</h3>
-              <p className="subtitle">demo@ideaisland.dev</p>
-            </div>
-          </section>
-
-          <section className="profile-card">
-            <span className="field-label">主题数量</span>
-            <strong>{topics.length}</strong>
-          </section>
-          <section className="profile-card">
-            <span className="field-label">资料总数</span>
-            <strong>{totalMaterials}</strong>
-          </section>
-          <section className="profile-card">
-            <span className="field-label">接口模式</span>
-            <strong>{import.meta.env.VITE_USE_MOCK === 'false' ? '真实后端' : 'Mock 数据'}</strong>
-          </section>
-        </div>
-
-        <div className="profile-grid two">
-          <section className="profile-card">
-            <h3>账号信息</h3>
-            <div className="form-grid">
-              <label className="form-row">
-                <span className="field-label">昵称</span>
-                <input className="input" defaultValue="Alex" />
-              </label>
-              <label className="form-row">
-                <span className="field-label">头像 Key</span>
-                <input className="input" placeholder="上传接口接入后写入 avatarKey" />
-              </label>
-              <button className="btn compact">保存资料</button>
-            </div>
-          </section>
-
-          <section className="profile-card">
-            <h3>开发配置</h3>
-            <p className="read-block">VITE_API_BASE_URL：{import.meta.env.VITE_API_BASE_URL || 'http://localhost:8091'}</p>
-            <p className="read-block">VITE_USE_MOCK：{import.meta.env.VITE_USE_MOCK ?? 'true'}</p>
-            <p className="subtitle">切换真实后端时，将 `.env` 中的 `VITE_USE_MOCK` 设置为 `false`。</p>
-          </section>
-        </div>
-      </div>
-    </section>
-  );
-}

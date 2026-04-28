@@ -407,6 +407,9 @@ function filterMaterials(materials: Material[], params: MaterialListParams) {
       if (params.sortBy === 'statusAt') {
         return (new Date(statusEnteredAt(a)).getTime() - new Date(statusEnteredAt(b)).getTime()) * direction;
       }
+      if (params.sortBy === 'updatedAt') {
+        return (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime()) * direction;
+      }
       return (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) * direction;
     });
 }

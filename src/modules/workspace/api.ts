@@ -49,6 +49,11 @@ type ApiMaterialDetail = {
     tagGroupKey: string;
     tagValue: string;
   }>;
+  statusHistory?: Array<{
+    status?: string;
+    label?: string;
+    occurredAt?: string;
+  }>;
 };
 
 type ApiPage<T> = {
@@ -127,6 +132,13 @@ function mapMaterialDetail(detail: ApiMaterialDetail | null | undefined): Materi
     collectedAt: material.collectedAt,
     archivedAt: material.archivedAt,
     invalidAt: material.invalidAt,
+    statusHistory: (detail.statusHistory ?? [])
+      .filter((record) => record.occurredAt)
+      .map((record) => ({
+        status: record.status || '',
+        label: record.label || record.status || '状态变更',
+        occurredAt: record.occurredAt!,
+      })),
     tags: (detail.tags ?? []).map((tag) => ({
       ...tag,
       tagType: tag.tagType?.toUpperCase() as 'USER' | 'SYSTEM' | undefined,

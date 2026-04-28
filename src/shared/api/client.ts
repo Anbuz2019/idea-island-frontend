@@ -13,7 +13,7 @@ export type BizError = {
   status?: number;
 };
 
-function resolveClientType() {
+export function resolveClientType() {
   if (typeof navigator === 'undefined') return 'pc';
   const userAgent = navigator.userAgent.toLowerCase();
   return userAgent.includes('mobile')
@@ -22,6 +22,39 @@ function resolveClientType() {
     || userAgent.includes('ipad')
     ? 'mobile'
     : 'pc';
+}
+
+export function authTokenStorageKey(clientType = resolveClientType()) {
+  return `idea-island-token:${clientType}`;
+}
+
+export function readAuthToken() {
+  const scopedKey = authTokenStorageKey();
+  const scopedToken = localStorage.getItem(scopedKey);
+  if (scopedToken) return scopedToken;
+
+  const legacyToken = localStorage.getItem('idea-island-token');
+  if (legacyToken) {
+    localStorage.setItem(scopedKey, legacyToken);
+    localStorage.removeItem('idea-island-token');
+  }
+  return legacyToken;
+}
+
+export function saveAuthToken(token: string) {
+  localStorage.setItem(authTokenStorageKey(), token);
+}
+
+export function removeAuthToken() {
+  localStorage.removeItem(authTokenStorageKey());
+  localStorage.removeItem('idea-island-token');
+}
+
+function redirectToLogin() {
+  removeAuthToken();
+  if (typeof window === 'undefined') return;
+  if (window.location.pathname === '/login') return;
+  window.location.replace('/login');
 }
 
 export const apiClient = axios.create({
@@ -44,8 +77,9 @@ export const apiClient = axios.create({
 });
 
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('idea-island-token');
-  config.headers['X-Client-Type'] = resolveClientType();
+  const clientType = resolveClientType();
+  const token = readAuthToken();
+  config.headers['X-Client-Type'] = clientType;
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -54,9 +88,16 @@ apiClient.interceptors.request.use((config) => {
 
 apiClient.interceptors.response.use(
   (response) => {
+    const refreshedToken = response.headers['x-refresh-token'];
+    if (typeof refreshedToken === 'string' && refreshedToken) {
+      saveAuthToken(refreshedToken);
+    }
     const body = response.data as Result<unknown>;
     if (body && typeof body === 'object' && 'code' in body) {
       if (body.code === 0) return body.data;
+      if (response.status === 401 || body.code === 1003) {
+        redirectToLogin();
+      }
       const error: BizError = {
         code: body.code,
         message: body.message || '请求失败',
@@ -68,7 +109,7 @@ apiClient.interceptors.response.use(
   },
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem('idea-island-token');
+      redirectToLogin();
     }
     throw {
       code: error.response?.data?.code ?? error.response?.status ?? -1,

@@ -28,6 +28,8 @@ export function shortDate(value: string) {
 
   if (dayDiff <= 0) return `今天 ${date.format('HH:mm')}`;
   if (dayDiff === 1) return `昨天 ${date.format('HH:mm')}`;
+  if (dayDiff >= 365) return `${Math.floor(dayDiff / 365)}年前`;
+  if (dayDiff >= 30) return `${Math.floor(dayDiff / 30)}个月前`;
   return `${dayDiff}天前`;
 }
 

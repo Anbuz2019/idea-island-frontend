@@ -1711,19 +1711,35 @@ a {
 
 .status-chip {
   min-width: 64px;
+  gap: 4px;
   justify-content: center;
   border: 0;
   background: var(--active-chip);
   color: var(--theme-text);
 }
 
-.status-chip::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  margin-right: 5px;
-  border-radius: 999px;
-  background: currentColor;
+.status-chip svg {
+  flex: 0 0 auto;
+  stroke-width: 2.4;
+}
+
+.status-chip .status-icon-collected {
+  stroke-width: 2.9;
+}
+
+.status-chip .material-status-collected {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.status-chip .material-status-collected path {
+  stroke-width: 2.8;
+}
+
+.status-chip .material-status-collected circle {
+  stroke-width: 2.2;
 }
 
 .tag-chip {
@@ -2026,6 +2042,121 @@ a {
   font-size: 15.5px;
 }
 
+.change-history-section {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+}
+
+.change-history-toggle {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--line), transparent 18%);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.change-history-toggle:hover {
+  border-color: color-mix(in srgb, var(--theme), var(--line) 58%);
+  color: var(--theme);
+  background: rgba(var(--theme-rgb), 0.04);
+}
+
+.change-history-toggle span {
+  font-size: 11px;
+  font-weight: 750;
+  opacity: 0.75;
+}
+
+.status-timeline {
+  width: 100%;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(84px, 1fr);
+  gap: 0;
+  overflow-x: auto;
+  padding: 8px 2px 3px;
+}
+
+.status-timeline-item {
+  position: relative;
+  min-width: 84px;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.status-timeline-item::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--line), transparent 10%);
+  z-index: 0;
+}
+
+.status-timeline-item:first-child::before {
+  left: 50%;
+}
+
+.status-timeline-item:last-child::before {
+  right: 50%;
+}
+
+.status-timeline-icon {
+  position: relative;
+  z-index: 1;
+  width: 24px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
+  border: 2px solid color-mix(in srgb, var(--surface), transparent 0%);
+  border-radius: 999px;
+  background: var(--theme);
+  color: var(--theme-on);
+  box-shadow: 0 0 0 1px rgba(var(--theme-rgb), 0.18);
+}
+
+.status-timeline-icon.status-COLLECTED {
+  background: var(--theme);
+}
+
+.status-timeline-icon.status-ARCHIVED {
+  background: var(--blue);
+}
+
+.status-timeline-icon.status-INVALID {
+  background: var(--rose);
+}
+
+.status-timeline-icon.status-PENDING_REVIEW {
+  background: var(--amber);
+}
+
+.status-timeline-item strong {
+  color: var(--heading);
+  font-size: 12.5px;
+  font-weight: 900;
+}
+
+.status-timeline-item time {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .markdown-toggle {
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(44px, 1fr));
@@ -2160,6 +2291,37 @@ a {
   gap: 10px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.detail-tag-group-box {
+  grid-template-columns: minmax(92px, 128px) minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 10px;
+}
+
+.detail-tag-group-name {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--heading);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.detail-tag-group-box .tag-picker {
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.detail-tag-group-mode {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
 }
 
 .tag-picker {
@@ -3708,6 +3870,15 @@ a {
 
   .tag-group-box {
     padding: 10px;
+  }
+
+  .detail-tag-group-box {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .detail-tag-group-box .tag-picker {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 
   .settings-page,

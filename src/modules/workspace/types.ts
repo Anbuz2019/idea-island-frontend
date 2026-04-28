@@ -4,6 +4,10 @@ export type MaterialStatus = 'INBOX' | 'PENDING_REVIEW' | 'COLLECTED' | 'ARCHIVE
 
 export type ViewKey = 'inbox' | 'library' | 'invalid' | 'search' | 'topicSettings' | 'stats' | 'assistant' | 'profile';
 
+export type InterfaceStyle = 'classic' | 'glass' | 'anime';
+
+export type MaterialSortBy = 'createdAt' | 'updatedAt' | 'score' | 'status' | 'statusAt';
+
 export type Topic = {
   id: number;
   name: string;
@@ -47,6 +51,12 @@ export type MaterialMeta = {
   thumbnailUrl?: string;
 };
 
+export type MaterialStatusHistory = {
+  status: string;
+  label: string;
+  occurredAt: string;
+};
+
 export type Material = {
   id: number;
   topicId: number;
@@ -68,6 +78,7 @@ export type Material = {
   collectedAt?: string;
   archivedAt?: string;
   invalidAt?: string;
+  statusHistory?: MaterialStatusHistory[];
   tags: MaterialTag[];
   meta: MaterialMeta;
 };
@@ -80,7 +91,7 @@ export type MaterialListParams = {
   scoreMin?: number;
   scoreMax?: number;
   tagFilters?: Record<string, string[]>;
-  sortBy?: 'createdAt' | 'score' | 'status' | 'statusAt';
+  sortBy?: MaterialSortBy;
   sortDirection?: 'asc' | 'desc';
   unreadOnly?: boolean;
   page?: number;
