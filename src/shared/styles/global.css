@@ -542,6 +542,12 @@ a {
   backdrop-filter: blur(10px);
 }
 
+.live2d-widget.bubble-right .live2d-bubble {
+  right: auto;
+  left: 74%;
+  border-radius: 18px 18px 18px 8px;
+}
+
 .live2d-bubble.is-visible {
   opacity: 1;
   transform: translateY(0) scale(1);
@@ -558,6 +564,15 @@ a {
   border-bottom: 1px solid color-mix(in srgb, var(--line), var(--theme) 32%);
   background: inherit;
   transform: rotate(-45deg);
+}
+
+.live2d-widget.bubble-right .live2d-bubble::after {
+  right: auto;
+  left: -6px;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 1px solid color-mix(in srgb, var(--line), var(--theme) 32%);
+  border-top: 1px solid color-mix(in srgb, var(--line), var(--theme) 32%);
 }
 
 :root[data-theme="dark"] .live2d-drag-handle,
@@ -654,8 +669,8 @@ a {
 
 .live2d-launcher {
   position: fixed;
-  right: 22px;
-  bottom: 22px;
+  left: 40px;
+  bottom: 56px;
   z-index: 42;
   padding: 10px 15px;
   font-size: 14px;
@@ -2011,6 +2026,113 @@ a {
   font-size: 15.5px;
 }
 
+.markdown-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(44px, 1fr));
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--field);
+  padding: 3px;
+}
+
+.markdown-toggle button {
+  min-height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.markdown-toggle button.active {
+  background: var(--surface);
+  color: var(--theme);
+  box-shadow: var(--shadow-soft);
+}
+
+.markdown-editor {
+  min-height: 148px;
+  font-family: inherit;
+}
+
+.markdown-view {
+  min-height: 52px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface), transparent 16%);
+  color: var(--text);
+  padding: 13px 14px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.markdown-view :first-child {
+  margin-top: 0;
+}
+
+.markdown-view :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-view p {
+  margin: 0 0 9px;
+}
+
+.markdown-view h4,
+.markdown-view h5,
+.markdown-view h6 {
+  margin: 12px 0 7px;
+  color: var(--heading);
+  font-size: 15px;
+}
+
+.markdown-view ul {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+
+.markdown-view li {
+  margin: 3px 0;
+}
+
+.markdown-view blockquote {
+  margin: 0 0 10px;
+  border-left: 3px solid rgba(var(--theme-rgb), 0.42);
+  background: rgba(var(--theme-rgb), 0.06);
+  color: var(--muted);
+  padding: 8px 10px;
+}
+
+.markdown-view code {
+  border-radius: 5px;
+  background: var(--field);
+  color: var(--theme-text);
+  padding: 1px 5px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 0.92em;
+}
+
+.markdown-view pre {
+  margin: 0 0 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--field);
+  padding: 10px;
+}
+
+.markdown-view pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.markdown-view a {
+  color: var(--theme);
+  font-weight: 800;
+}
+
 .read-block {
   margin: 0;
   white-space: pre-wrap;
@@ -2232,6 +2354,106 @@ a {
   font-size: 14px;
 }
 
+.changelog-card {
+  margin-bottom: 4px;
+}
+
+.changelog-summary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.changelog-summary h3 {
+  margin: 0;
+}
+
+.changelog-summary-action {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 0 11px;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.changelog-summary:hover .changelog-summary-action {
+  border-color: color-mix(in srgb, var(--theme), var(--line) 54%);
+  color: var(--theme);
+}
+
+.changelog-list {
+  display: grid;
+  gap: 12px;
+}
+
+.changelog-entry {
+  display: grid;
+  grid-template-columns: minmax(126px, 180px) minmax(0, 1fr);
+  gap: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.changelog-entry:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.changelog-version {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+}
+
+.changelog-version span {
+  width: fit-content;
+  border: 1px solid color-mix(in srgb, var(--theme), var(--line) 58%);
+  border-radius: 999px;
+  background: rgba(var(--theme-rgb), 0.08);
+  color: var(--theme);
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.changelog-version strong {
+  color: var(--heading);
+  font-size: 15px;
+}
+
+.changelog-version em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.changelog-entry ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.changelog-entry li::marker {
+  color: var(--theme);
+}
+
 .profile-page {
   min-height: 0;
   height: 100%;
@@ -2399,6 +2621,10 @@ a {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.section-title-row.compact {
+  align-items: center;
 }
 
 .section-title-row h3 {
@@ -2866,21 +3092,20 @@ a {
 .success-popup {
   width: min(420px, calc(100vw - 32px));
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) 32px;
+  grid-template-columns: 46px minmax(0, 1fr);
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   border: 1px solid rgba(var(--theme-rgb), 0.28);
   border-radius: 14px;
   background: color-mix(in srgb, var(--surface), transparent 2%);
   box-shadow: 0 24px 70px rgba(12, 34, 29, 0.26);
-  padding: 16px;
-  pointer-events: auto;
+  padding: 13px 15px;
   animation: success-pop 180ms ease-out;
 }
 
 .success-popup-icon {
-  width: 52px;
-  height: 52px;
+  width: 46px;
+  height: 46px;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -2899,15 +3124,6 @@ a {
   color: var(--muted);
   font-size: 14px;
   line-height: 1.45;
-}
-
-.success-popup-close {
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--muted);
 }
 
 @keyframes success-pop {
@@ -3561,6 +3777,16 @@ a {
 
   .profile-name-row h2 {
     font-size: 23px;
+  }
+
+  .changelog-entry {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .changelog-entry ul {
+    padding-left: 16px;
+    font-size: 12px;
   }
 
   .modal-backdrop {

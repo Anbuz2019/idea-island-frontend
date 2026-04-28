@@ -98,6 +98,24 @@ const themePresets = [
   { name: '玫红', color: '#be123c' },
 ];
 
+const changelogEntries = [
+  {
+    version: '1.0.1',
+    date: '2026-04-28',
+    title: '使用体验升级',
+    items: [
+      '资料采集、收件箱、资料库、搜索和主题设置流程更加完整。',
+      '资料列表支持未读提示、分页加载、评分排序、状态筛选和标签筛选。',
+      '资料详情支持编辑标题、描述、来源、链接、原始内容、评语、评分和标签。',
+      '评语支持 Markdown 输入、预览和展示；资料列表会自动提取 Markdown 标题作为评语摘要。',
+      '移动端优化了底部导航、筛选面板、采集弹窗、详情滑动和图片放大预览。',
+      '新增暗夜模式、通透风格、二次元风格和主题色自定义。',
+      '新增沐沐看板助手，支持拖拽、缩放、互动对话、工作近况、休息提醒和成就提示。',
+      '图片资料、封面展示、默认封面和二次元壁纸体验更加稳定。',
+    ],
+  },
+];
+
 const viewLabels: Record<ViewKey, string> = {
   inbox: '收件箱',
   library: '资料库',
@@ -264,6 +282,112 @@ function useAnimeStyleActive() {
 
 function isDefaultMaterialCover(url?: string) {
   return url === DEFAULT_MATERIAL_COVER_URL;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderInlineMarkdown(value: string) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+}
+
+function renderMarkdown(value?: string | null) {
+  const text = value?.trim();
+  if (!text) return '<p>尚未评价</p>';
+
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const html: string[] = [];
+  let inCode = false;
+  let codeLines: string[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    html.push(`<ul>${listItems.join('')}</ul>`);
+    listItems = [];
+  };
+
+  const flushCode = () => {
+    html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+    codeLines = [];
+  };
+
+  lines.forEach((line) => {
+    if (line.trim().startsWith('```')) {
+      if (inCode) {
+        flushCode();
+        inCode = false;
+      } else {
+        flushList();
+        inCode = true;
+      }
+      return;
+    }
+
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushList();
+      return;
+    }
+    const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flushList();
+      const level = heading[1].length + 3;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      return;
+    }
+    const list = /^[-*]\s+(.+)$/.exec(trimmed);
+    if (list) {
+      listItems.push(`<li>${renderInlineMarkdown(list[1])}</li>`);
+      return;
+    }
+    const quote = /^>\s+(.+)$/.exec(trimmed);
+    if (quote) {
+      flushList();
+      html.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`);
+      return;
+    }
+    flushList();
+    html.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+  });
+
+  flushList();
+  if (inCode) flushCode();
+  return html.join('');
+}
+
+function MarkdownView({ value, emptyText = '尚未评价' }: { value?: string | null; emptyText?: string }) {
+  return (
+    <div
+      className="markdown-view"
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(value?.trim() ? value : emptyText) }}
+    />
+  );
+}
+
+function commentPreviewText(comment?: string | null) {
+  const text = comment?.trim();
+  if (!text) return '';
+  const firstLine = text.split(/\r?\n/)[0].trim();
+  if (firstLine.startsWith('#')) {
+    return firstLine.replace(/^#+\s*/, '');
+  }
+  return clampText(text, 40);
 }
 
 function statusEnteredAt(material: Material) {
@@ -766,6 +890,55 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
   }, [topics]);
 
   const activeTopic = topics.find((topic) => topic.id === activeTopicId) ?? topics[0];
+  const activeCounts = activeTopic ? topicCounts[activeTopic.id] : undefined;
+  const mascotMaterialQuery = useQuery({
+    queryKey: queryKeys.material(selectedMaterialId),
+    queryFn: () => workspaceApi.getMaterial(selectedMaterialId!),
+    enabled: Boolean(selectedMaterialId),
+    staleTime: 30_000,
+  });
+  const mascotSummary = useMemo(() => {
+    const total = topics.reduce(
+      (summary, topic) => {
+        const count = topicCounts[topic.id] ?? {
+          inbox: 0,
+          library: 0,
+          total: topic.materialCount,
+          unreadInbox: 0,
+          unreadLibrary: 0,
+        };
+        return {
+          inbox: summary.inbox + count.inbox,
+          library: summary.library + count.library,
+          total: summary.total + count.total,
+          unreadInbox: summary.unreadInbox + count.unreadInbox,
+          unreadLibrary: summary.unreadLibrary + count.unreadLibrary,
+        };
+      },
+      { inbox: 0, library: 0, total: 0, unreadInbox: 0, unreadLibrary: 0 },
+    );
+    return {
+      topicName: activeTopic?.name,
+      topicCount: topics.length,
+      activeInbox: activeCounts?.inbox ?? 0,
+      activeLibrary: activeCounts?.library ?? 0,
+      activeUnread: (activeCounts?.unreadInbox ?? 0) + (activeCounts?.unreadLibrary ?? 0),
+      totalMaterials: total.total,
+      totalInbox: total.inbox,
+      totalLibrary: total.library,
+      totalUnread: total.unreadInbox + total.unreadLibrary,
+    };
+  }, [activeCounts, activeTopic?.name, topicCounts, topics]);
+  const mascotMaterial = mascotMaterialQuery.data;
+  const mascotMaterialSummary = mascotMaterial ? {
+    id: mascotMaterial.id,
+    title: mascotMaterial.title,
+    status: mascotMaterial.status,
+    score: mascotMaterial.score,
+    tagCount: mascotMaterial.tags.filter((tag) => tag.tagType !== 'SYSTEM').length,
+    hasComment: Boolean(mascotMaterial.comment?.trim()),
+    hasDescription: Boolean(mascotMaterial.description?.trim()),
+  } : undefined;
 
   const openTopicSettings = () => {
     changeView('topicSettings');
@@ -894,6 +1067,8 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
         viewLabel={viewLabels[activeView]}
         captureOpen={captureOpen}
         noticeText={successNotice?.text}
+        workspaceSummary={mascotSummary}
+        materialSummary={mascotMaterialSummary}
       />
       <SuccessPopup notice={successNotice} onClose={() => setSuccessNotice(undefined)} />
     </div>
@@ -934,7 +1109,7 @@ function SuccessPopup({
 }) {
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(onClose, 2300);
+    const timer = window.setTimeout(onClose, 1000);
     return () => window.clearTimeout(timer);
   }, [notice?.id, onClose]);
 
@@ -950,9 +1125,6 @@ function SuccessPopup({
           <strong>操作成功</strong>
           <p>{notice.text}</p>
         </div>
-        <button className="success-popup-close" type="button" onClick={onClose} aria-label="关闭提示">
-          <X size={16} />
-        </button>
       </div>
     </div>
   );
@@ -1245,6 +1417,7 @@ function WorkspaceView({
   });
 
   const rawItems = flattenPages(query.data);
+  const totalCount = query.data?.pages[0]?.total ?? rawItems.length;
   const [topUnreadIds, setTopUnreadIds] = useState<number[]>([]);
   const wasFetchingRef = useRef(false);
   const listScopeKey = useMemo(() => JSON.stringify({ view, params }), [params, view]);
@@ -1437,6 +1610,7 @@ function WorkspaceView({
                 setStatusFilter={setStatusFilter}
                 unreadOnly={unreadOnly}
                 unreadCount={unreadItemsCount}
+                totalCount={totalCount}
                 onUnreadOnlyChange={handleUnreadOnlyChange}
                 loading={query.isLoading}
                 fetchingNext={query.isFetchingNextPage}
@@ -1478,6 +1652,7 @@ function WorkspaceView({
               setStatusFilter={setStatusFilter}
               unreadOnly={unreadOnly}
               unreadCount={unreadItemsCount}
+              totalCount={totalCount}
               onUnreadOnlyChange={handleUnreadOnlyChange}
               loading={query.isLoading}
               fetchingNext={query.isFetchingNextPage}
@@ -1656,6 +1831,7 @@ function MaterialListPane({
   setStatusFilter,
   unreadOnly,
   unreadCount,
+  totalCount,
   onUnreadOnlyChange,
   loading,
   fetchingNext,
@@ -1672,6 +1848,7 @@ function MaterialListPane({
   setStatusFilter: (value: MaterialStatus[]) => void;
   unreadOnly: boolean;
   unreadCount: number;
+  totalCount: number;
   onUnreadOnlyChange: (value: boolean) => void;
   loading: boolean;
   fetchingNext: boolean;
@@ -1697,7 +1874,7 @@ function MaterialListPane({
             onClick={() => onUnreadOnlyChange(!unreadOnly)}
             title={unreadOnly ? '切换为全部资料' : '只查看未读资料'}
           >
-            {unreadOnly ? `未读 ${unreadCount} 条` : `全部 ${items.length} 条`}
+            {unreadOnly ? `未读 ${unreadCount} 条` : `全部 ${totalCount} 条`}
           </button>
         </div>
       </div>
@@ -1719,7 +1896,7 @@ function MaterialListPane({
               />
             ))}
             <div className="load-state">
-              {fetchingNext ? '正在加载下一页...' : hasNext ? '继续下滑加载更多' : `已加载全部 ${items.length} 条`}
+              {fetchingNext ? '正在加载下一页...' : hasNext ? '继续下滑加载更多' : `已加载全部 ${unreadOnly ? items.length : totalCount} 条`}
             </div>
           </div>
         )}
@@ -1817,7 +1994,7 @@ function MaterialCard({
           {(material.status === 'COLLECTED' || material.status === 'ARCHIVED' || material.score != null) && (
             <div className="material-score-block">
               <span className={`score-text ${scoreTone(material.score)}`}>{material.score?.toFixed(1) ?? '-'}</span>
-              {material.comment && <p className="material-comment">{clampText(material.comment, 40)}</p>}
+              {material.comment && <p className="material-comment">{commentPreviewText(material.comment)}</p>}
             </div>
           )}
           <span className="material-updated">{shortDate(statusEnteredAt(material))}</span>
@@ -1867,6 +2044,8 @@ function MaterialDetailPanel({
   const [collectOpen, setCollectOpen] = useState(false);
   const [collectScore, setCollectScore] = useState(8);
   const [collectComment, setCollectComment] = useState('');
+  const [commentPreview, setCommentPreview] = useState(false);
+  const [collectCommentPreview, setCollectCommentPreview] = useState(false);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const [toast, setToast] = useState<{ tone: 'success' | 'error'; text: string }>();
 
@@ -1892,6 +2071,8 @@ function MaterialDetailPanel({
       materialType: material.materialType,
     });
     setCollectOpen(false);
+    setCommentPreview(false);
+    setCollectCommentPreview(false);
     setImagePreviewOpen(false);
     setCollectScore(material.score ?? 8);
     setCollectComment(material.comment ?? '');
@@ -2135,11 +2316,28 @@ function MaterialDetailPanel({
         </div>
 
         <div className="section">
-          <h3>评语</h3>
+          <div className="section-title-row compact">
+            <h3>评语</h3>
+            {editing && (
+              <div className="markdown-toggle" aria-label="评语编辑模式">
+                <button type="button" className={!commentPreview ? 'active' : ''} onClick={() => setCommentPreview(false)}>输入</button>
+                <button type="button" className={commentPreview ? 'active' : ''} onClick={() => setCommentPreview(true)}>预览</button>
+              </div>
+            )}
+          </div>
           {editing ? (
-            <textarea className="textarea" value={form.comment ?? ''} onChange={(event) => updateField('comment', event.target.value)} />
+            commentPreview ? (
+              <MarkdownView value={form.comment} />
+            ) : (
+              <textarea
+                className="textarea markdown-editor"
+                value={form.comment ?? ''}
+                onChange={(event) => updateField('comment', event.target.value)}
+                placeholder="支持 Markdown：**重点**、- 列表、> 引用、`代码`、[链接](https://...)"
+              />
+            )
           ) : (
-            <p className="read-block">{material.comment || '尚未评价'}</p>
+            <MarkdownView value={material.comment} />
           )}
         </div>
 
@@ -2249,15 +2447,25 @@ function MaterialDetailPanel({
                 <strong className={`score-text ${scoreTone(collectScore)}`}>{collectScore.toFixed(1)}</strong>
               </div>
             </label>
-            <label className="form-row">
-              <RequiredLabel required>评语</RequiredLabel>
-              <textarea
-                className="textarea"
-                value={collectComment}
-                onChange={(event) => setCollectComment(event.target.value)}
-                placeholder="写下处理结论、摘要或后续使用建议"
-              />
-            </label>
+            <div className="form-row">
+              <div className="section-title-row compact">
+                <RequiredLabel required>评语</RequiredLabel>
+                <div className="markdown-toggle" aria-label="收录评语编辑模式">
+                  <button type="button" className={!collectCommentPreview ? 'active' : ''} onClick={() => setCollectCommentPreview(false)}>输入</button>
+                  <button type="button" className={collectCommentPreview ? 'active' : ''} onClick={() => setCollectCommentPreview(true)}>预览</button>
+                </div>
+              </div>
+              {collectCommentPreview ? (
+                <MarkdownView value={collectComment} emptyText="暂无预览内容" />
+              ) : (
+                <textarea
+                  className="textarea markdown-editor"
+                  value={collectComment}
+                  onChange={(event) => setCollectComment(event.target.value)}
+                  placeholder="支持 Markdown：**重点**、- 列表、> 引用、`代码`、[链接](https://...)"
+                />
+              )}
+            </div>
           </div>
 
           <div className="section">
@@ -2992,6 +3200,7 @@ function ProfileDashboard({
   const [isVip, setIsVip] = useState(() => localStorage.getItem('idea-island-vip') === 'true');
   const [profileForm, setProfileForm] = useState({ nickname: '', note: '' });
   const [profileMessage, setProfileMessage] = useState('');
+  const [changelogOpen, setChangelogOpen] = useState(false);
   const [themeColor, setThemeColor] = useState(readStoredThemeColor);
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(readStoredAppearanceMode);
   const [interfaceStyle, setInterfaceStyle] = useState<InterfaceStyle>(readInterfaceStyle);
@@ -3291,6 +3500,42 @@ function ProfileDashboard({
               );
             })}
           </div>
+        </section>
+
+        <section className={`profile-card changelog-card ${changelogOpen ? 'open' : ''}`}>
+          <button
+            type="button"
+            className="changelog-summary"
+            onClick={() => setChangelogOpen((current) => !current)}
+            aria-expanded={changelogOpen}
+          >
+            <div>
+              <h3>更新日志</h3>
+              <p className="subtitle">记录当前前端版本的主要变化。</p>
+            </div>
+            <span className="changelog-summary-action">
+              {changelogOpen ? '收起' : '展开'}
+              {changelogOpen ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+            </span>
+          </button>
+          {changelogOpen && (
+            <div className="changelog-list">
+              {changelogEntries.map((entry) => (
+                <article className="changelog-entry" key={entry.version}>
+                  <div className="changelog-version">
+                    <span>{entry.version}</span>
+                    <strong>{entry.title}</strong>
+                    <em>{entry.date}</em>
+                  </div>
+                  <ul>
+                    {entry.items.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </section>
