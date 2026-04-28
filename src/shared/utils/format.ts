@@ -30,9 +30,10 @@ export function parseServerTime(value?: string) {
   if (!value) return dayjs(Number.NaN);
   const normalized = value.trim();
   if (!normalized) return dayjs(Number.NaN);
+  // Backend LocalDateTime values are serialized without an offset, but represent UTC instants.
   return timezonePattern.test(normalized)
     ? dayjs(normalized).tz(serverLocalTimeZone)
-    : dayjs.tz(normalized, serverLocalTimeZone);
+    : dayjs.utc(normalized).tz(serverLocalTimeZone);
 }
 
 export function serverTimeMs(value?: string) {

@@ -34,13 +34,13 @@
 Windows PowerShell 推荐直接复制这一行：
 
 ```powershell
-docker build --build-arg VITE_API_BASE_URL=/ --build-arg VITE_USE_MOCK=false -t idea-island-frontend .
+docker build --no-cache --build-arg VITE_API_BASE_URL=/ --build-arg VITE_USE_MOCK=false -t idea-island-frontend .
 ```
 
 Linux/macOS：
 
 ```bash
-docker build \
+docker build --no-cache \
   --build-arg VITE_API_BASE_URL=/ \
   --build-arg VITE_USE_MOCK=false \
   -t idea-island-frontend .
@@ -51,6 +51,7 @@ docker build \
 - `VITE_API_BASE_URL=/`：浏览器请求 `/api/v1/...`。
 - `VITE_USE_MOCK=false`：关闭前端 mock，使用真实后端接口。
 - Caddy 会把 `/api/*` 转发到后端服务。
+- `--no-cache`：强制重新执行前端构建，避免 Docker 复用旧的构建层。
 
 ## 启动容器
 
@@ -130,10 +131,12 @@ docker run -d \
 
 每次前端代码更新后，重新构建镜像并重启容器。
 
+注意：线上运行的是 `dist/` 构建产物，不是 `src/` 源码。只替换源码文件不会让页面生效，必须重新构建镜像并重启容器。下面的命令已使用 `--no-cache`，会强制重新生成新的 `dist`。
+
 Windows PowerShell：
 
 ```powershell
-docker build --build-arg VITE_API_BASE_URL=/ --build-arg VITE_USE_MOCK=false -t idea-island-frontend .
+docker build --no-cache --build-arg VITE_API_BASE_URL=/ --build-arg VITE_USE_MOCK=false -t idea-island-frontend .
 docker rm -f idea-island-frontend
 docker run -d --name idea-island-frontend -p 80:80 --add-host=host.docker.internal:host-gateway -e API_UPSTREAM=host.docker.internal:8091 idea-island-frontend
 ```
@@ -141,7 +144,7 @@ docker run -d --name idea-island-frontend -p 80:80 --add-host=host.docker.intern
 Linux/macOS：
 
 ```bash
-docker build \
+docker build --no-cache \
   --build-arg VITE_API_BASE_URL=/ \
   --build-arg VITE_USE_MOCK=false \
   -t idea-island-frontend .
