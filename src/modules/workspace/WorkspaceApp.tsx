@@ -1,4 +1,4 @@
-﻿import {
+import {
   Archive,
   BarChart3,
   Check,
@@ -62,6 +62,7 @@ import { useMascotSummary, type TopicSidebarCount } from './hooks/useMascotSumma
 import { XingxianLive2DWidget } from './live2d/XingxianLive2DWidget';
 import {
   flattenPages,
+  removeMaterialFromInfiniteData,
   isDefaultMaterialCover,
   isMaterialUnread,
   materialCoverKey,
@@ -1276,6 +1277,12 @@ function WorkspaceView({
     onReadMaterial(material);
   };
 
+  const handleDeleted = (id: number) => {
+    if (selectedMaterialId === id) {
+      onSelectMaterial(undefined);
+    }
+    onChanged();
+  };
   const onScroll = (event: UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
@@ -1331,7 +1338,7 @@ function WorkspaceView({
           <button className="btn compact ghost mobile-back-button" type="button" onClick={() => onSelectMaterial(undefined)}>
             <ChevronLeft size={15} /> 返回列表
           </button>
-          <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+          <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onDeleted={handleDeleted} onSuccess={onSuccess} />
         </div>
       </section>
     );
@@ -1382,7 +1389,7 @@ function WorkspaceView({
               />
             </div>
             {!isMobile && (
-              <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+              <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onDeleted={handleDeleted} onSuccess={onSuccess} />
             )}
           </div>
         </div>
@@ -1426,7 +1433,7 @@ function WorkspaceView({
             />
           </div>
           {!isMobile && (
-            <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onSuccess={onSuccess} />
+            <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onDeleted={handleDeleted} onSuccess={onSuccess} />
           )}
         </div>
       )}
@@ -1456,11 +1463,13 @@ function MaterialDetailPanel({
   material,
   tagGroups,
   onChanged,
+  onDeleted,
   onSuccess,
 }: {
   material?: Material;
   tagGroups: TagGroup[];
   onChanged: () => void;
+  onDeleted: (id: number) => void;
   onSuccess: NotifySuccess;
 }) {
   const queryClient = useQueryClient();
@@ -1469,6 +1478,7 @@ function MaterialDetailPanel({
   const [tagSelection, setTagSelection] = useState<MaterialTag[]>([]);
   const [message, setMessage] = useState('');
   const [collectOpen, setCollectOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [collectScore, setCollectScore] = useState(8);
   const [collectComment, setCollectComment] = useState('');
   const [commentPreview, setCommentPreview] = useState(false);
@@ -1571,6 +1581,32 @@ function MaterialDetailPanel({
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!material) throw new Error('未选择资料');
+      return workspaceApi.deleteMaterial(material.id);
+    },
+    onSuccess: () => {
+      if (!material) return;
+      const deletedId = material.id;
+      setDeleteConfirmOpen(false);
+      onSuccess('资料已永久删除');
+      queryClient.removeQueries({ queryKey: queryKeys.material(deletedId) });
+      queryClient.setQueriesData({ queryKey: ['inbox'] }, (data: { pages: PageResponse<Material>[]; pageParams: unknown[] } | undefined) =>
+        removeMaterialFromInfiniteData(data, deletedId));
+      queryClient.setQueriesData({ queryKey: ['materials'] }, (data: { pages: PageResponse<Material>[]; pageParams: unknown[] } | undefined) =>
+        removeMaterialFromInfiniteData(data, deletedId));
+      queryClient.setQueriesData({ queryKey: ['search'] }, (data: { pages: PageResponse<Material>[]; pageParams: unknown[] } | undefined) =>
+        removeMaterialFromInfiniteData(data, deletedId));
+      void queryClient.invalidateQueries();
+      onDeleted(deletedId);
+    },
+    onError: (error) => {
+      const text = errorMessage(error);
+      setMessage(text);
+      showToast('error', `删除失败：${text}`);
+    },
+  });
   const collectMutation = useMutation({
     mutationFn: async () => {
       if (!material) throw new Error('未选择资料');
@@ -1587,6 +1623,7 @@ function MaterialDetailPanel({
     },
     onSuccess: () => {
       setCollectOpen(false);
+    setDeleteConfirmOpen(false);
       onSuccess('资料已收录');
       void queryClient.invalidateQueries();
       onChanged();
@@ -1853,9 +1890,15 @@ function MaterialDetailPanel({
               </button>
             )}
             {material.status === 'INVALID' ? (
-              <button className="btn compact" onClick={() => actionMutation.mutate('restore')}>
-                <RotateCcw size={15} /> 恢复收件箱
-              </button>
+              <>
+                <button className="btn compact" onClick={() => actionMutation.mutate('restore')}>
+                  <RotateCcw size={15} /> 恢复收件箱
+              
+                </button>
+                <button className="btn compact danger" onClick={() => setDeleteConfirmOpen(true)}>
+                  <Trash2 size={15} /> 永久删除
+                </button>
+              </>
             ) : (
               <button className="btn compact danger" onClick={() => actionMutation.mutate('invalidate')}>
                 <Trash2 size={15} /> 标记失效
@@ -1875,7 +1918,28 @@ function MaterialDetailPanel({
         </div>
       </div>
     )}
-    {collectOpen && (
+    {deleteConfirmOpen && (
+      <div className="modal-backdrop">
+        <div className="modal collect-modal" role="dialog" aria-modal="true" aria-labelledby="deleteMaterialTitle">
+          <div className="settings-head" style={{ paddingBottom: 0, borderBottom: 0 }}>
+            <div>
+              <h2 id="deleteMaterialTitle">永久删除资料</h2>
+              <p className="subtitle">该操作会从客户端列表和服务端数据库中彻底删除资料，删除后无法恢复。</p>
+            </div>
+            <button type="button" className="btn compact ghost" onClick={() => setDeleteConfirmOpen(false)}>
+              <X size={16} />
+            </button>
+          </div>
+          <p className="read-block">{material.title}</p>
+          <div className="modal-actions">
+            <button type="button" className="btn ghost" onClick={() => setDeleteConfirmOpen(false)}>取消</button>
+            <button type="button" className="btn danger" disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate()}>
+              {deleteMutation.isPending ? '删除中...' : '确认永久删除'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}    {collectOpen && (
       <div className="modal-backdrop">
         <div className="modal collect-modal" role="dialog" aria-modal="true" aria-labelledby="collectTitle">
           <div className="settings-head" style={{ paddingBottom: 0, borderBottom: 0 }}>

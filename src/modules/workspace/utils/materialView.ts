@@ -64,3 +64,20 @@ export function materialCoverKey(material: Material) {
 export function flattenPages<T>(data?: { pages: PageResponse<T>[] }) {
   return data?.pages.flatMap((page) => page.items) ?? [];
 }
+
+export function removeMaterialFromInfiniteData(
+  data: { pages: PageResponse<Material>[]; pageParams: unknown[] } | undefined,
+  id: number,
+) {
+  if (!data) return data;
+  let removed = 0;
+  const pages = data.pages.map((page) => {
+    const items = page.items.filter((item) => item.id !== id);
+    const pageRemoved = page.items.length - items.length;
+    removed += pageRemoved;
+    return pageRemoved
+      ? { ...page, items, total: Math.max(page.total - pageRemoved, 0) }
+      : page;
+  });
+  return removed ? { ...data, pages } : data;
+}

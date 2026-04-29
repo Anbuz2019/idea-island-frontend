@@ -637,6 +637,22 @@ export const mockRepository = {
     return delay(state.materials.find((material) => material.id === id)!);
   },
 
+  async deleteMaterial(id: number) {
+    const state = readState();
+    const material = state.materials.find((entry) => entry.id === id);
+    if (!material) throw { code: 404, message: '资料不存在' };
+    if (material.status !== 'INVALID') throw { code: 1005, message: '仅失效资料允许永久删除' };
+
+    state.materials = state.materials.filter((entry) => entry.id !== id);
+    state.topics = state.topics.map((topic) =>
+      topic.id === material.topicId
+        ? { ...topic, materialCount: Math.max((topic.materialCount ?? 0) - 1, 0) }
+        : topic,
+    );
+    writeState(state);
+    return delay({});
+  },
+
   async updateMaterialTags(id: number, tags: Material['tags']) {
     const state = readState();
     state.materials = state.materials.map((material) =>

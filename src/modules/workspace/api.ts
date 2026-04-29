@@ -322,6 +322,13 @@ export const workspaceApi = {
     return api.patch<ApiMaterialDetail>(`/api/v1/materials/${id}`, payload).then(mapMaterialDetail);
   },
 
+  deleteMaterial(id: number): Promise<void> {
+    if (shouldUseMockApi()) {
+      return mockRepository.deleteMaterial(id).then(() => undefined);
+    }
+    return api.delete(`/api/v1/materials/${id}`).then(() => undefined);
+  },
+
   updateMaterialTags(id: number, tags: Material['tags']): Promise<void> {
     if (shouldUseMockApi()) {
       return mockRepository.updateMaterialTags(id, tags).then(() => undefined);
