@@ -7,6 +7,7 @@ import type {
   SubmitMaterialPayload,
   TagGroup,
   Topic,
+  UpdateMaterialMetaPayload,
   UpdateMaterialPayload,
 } from '../types';
 
@@ -621,7 +622,12 @@ export const mockRepository = {
       createdAt,
       updatedAt: createdAt,
       tags: [],
-      meta: {},
+      meta: {
+        author: payload.author || undefined,
+        sourcePlatform: payload.sourcePlatform || payload.source || undefined,
+        thumbnailKey: payload.thumbnailKey || payload.fileKey,
+        thumbnailUrl: payload.coverUrl,
+      },
     };
     state.materials.unshift(material);
     writeState(state);
@@ -635,6 +641,32 @@ export const mockRepository = {
     );
     writeState(state);
     return delay(state.materials.find((material) => material.id === id)!);
+  },
+
+  async updateMaterialMeta(id: number, payload: UpdateMaterialMetaPayload) {
+    const state = readState();
+    state.materials = state.materials.map((material) =>
+      material.id === id
+        ? {
+            ...material,
+            source: payload.sourcePlatform ?? material.source,
+            updatedAt: new Date().toISOString(),
+            meta: {
+              ...material.meta,
+              author: payload.author ?? material.meta.author,
+              sourcePlatform: payload.sourcePlatform ?? material.meta.sourcePlatform,
+              publishedAt: payload.publishTime ?? material.meta.publishedAt,
+              wordCount: payload.wordCount ?? material.meta.wordCount,
+              durationSeconds: payload.durationSeconds ?? material.meta.durationSeconds,
+              thumbnailKey: payload.thumbnailKey ?? material.meta.thumbnailKey,
+            },
+          }
+        : material,
+    );
+    writeState(state);
+    const updated = state.materials.find((material) => material.id === id);
+    if (!updated) throw new Error('资料不存在');
+    return delay(updated);
   },
 
   async deleteMaterial(id: number) {

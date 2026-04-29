@@ -63,6 +63,7 @@ import { XingxianLive2DWidget } from './live2d/XingxianLive2DWidget';
 import {
   flattenPages,
   removeMaterialFromInfiniteData,
+  replaceMaterialInInfiniteData,
   isDefaultMaterialCover,
   isMaterialUnread,
   materialCoverKey,
@@ -269,6 +270,11 @@ function StatusChipIcon({ status }: { status: MaterialStatus }) {
 }
 
 type NotifySuccess = (text: string) => void;
+
+type MaterialMetaForm = {
+  author: string;
+  sourcePlatform: string;
+};
 
 function useCoverTone(imageUrl?: string) {
   const [tone, setTone] = useState<'dark' | 'light'>('dark');
@@ -1475,6 +1481,7 @@ function MaterialDetailPanel({
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<UpdateMaterialPayload>({});
+  const [metaForm, setMetaForm] = useState<MaterialMetaForm>({ author: '', sourcePlatform: '' });
   const [tagSelection, setTagSelection] = useState<MaterialTag[]>([]);
   const [message, setMessage] = useState('');
   const [collectOpen, setCollectOpen] = useState(false);
@@ -1508,6 +1515,10 @@ function MaterialDetailPanel({
       comment: material.comment,
       materialType: material.materialType,
     });
+    setMetaForm({
+      author: material.meta.author ?? '',
+      sourcePlatform: material.source || material.meta.sourcePlatform || '',
+    });
     setCollectOpen(false);
     setCommentPreview(false);
     setCollectCommentPreview(false);
@@ -1534,15 +1545,22 @@ function MaterialDetailPanel({
   const updateMutation = useMutation({
     mutationFn: async () => {
       if (!material) throw new Error('未选择资料');
-      const updated = await workspaceApi.updateMaterial(material.id, form);
+      await workspaceApi.updateMaterial(material.id, form);
+      await workspaceApi.updateMaterialMeta(material.id, {
+        author: metaForm.author,
+        sourcePlatform: metaForm.sourcePlatform,
+      });
       await workspaceApi.updateMaterialTags(material.id, tagSelection);
-      if (form.score != null && form.comment) {
-        await workspaceApi.collect(material.id, { score: Number(form.score), comment: form.comment });
-      }
-      return updated;
+      return workspaceApi.getMaterial(material.id);
     },
-    onSuccess: () => {
+    onSuccess: (updated) => {
       setEditing(false);
+      queryClient.setQueryData(queryKeys.material(updated.id), updated);
+      queryClient.setQueriesData(
+        { predicate: (query) => Array.isArray(query.queryKey) && ['inbox', 'materials', 'search'].includes(String(query.queryKey[0])) },
+        (data: { pages: PageResponse<Material>[]; pageParams: unknown[] } | undefined) =>
+          replaceMaterialInInfiniteData(data, updated),
+      );
       onSuccess('资料已保存');
       void queryClient.invalidateQueries();
       onChanged();
@@ -1652,6 +1670,10 @@ function MaterialDetailPanel({
     setForm((current) => ({ ...current, [field]: value }));
   };
 
+  const updateMetaField = (field: keyof MaterialMetaForm, value: string) => {
+    setMetaForm((current) => ({ ...current, [field]: value }));
+  };
+
   const toggleTag = (group: TagGroup, tag: TagValue) => {
     setTagSelection((current) => {
       const key = String(group.id);
@@ -1739,6 +1761,20 @@ function MaterialDetailPanel({
             )}
           </div>
         </div>
+        {(editing || material.meta.author) && (
+          <div className="detail-author-badge">
+            {editing ? (
+              <input
+                className="input"
+                value={metaForm.author}
+                onChange={(event) => updateMetaField('author', event.target.value)}
+                placeholder="作者名称"
+              />
+            ) : (
+              <span>作者：{material.meta.author}</span>
+            )}
+          </div>
+        )}
       </div>
 
         <div className="detail-body">
@@ -1754,8 +1790,8 @@ function MaterialDetailPanel({
           </InfoCard>
           <InfoCard label="来源">
             {editing ? (
-              <input className="input" value={form.source ?? ''} onChange={(event) => updateField('source', event.target.value)} />
-            ) : material.source || '-'}
+              <input className="input" value={metaForm.sourcePlatform} onChange={(event) => updateMetaField('sourcePlatform', event.target.value)} />
+            ) : material.source || material.meta.sourcePlatform || '-'}
           </InfoCard>
           <InfoCard label="链接">
             {editing ? (
@@ -2067,6 +2103,7 @@ function CaptureModal({
     title: '',
     description: '',
     source: '',
+    author: '',
     coverUrl: '',
   });
   const [message, setMessage] = useState('');
@@ -2201,7 +2238,11 @@ function CaptureModal({
       setMessage('图片资料需要先上传或粘贴图片');
       return;
     }
-    mutation.mutate({ ...payload, materialType: type });
+    mutation.mutate({
+      ...payload,
+      materialType: type,
+      author: payload.author?.trim() || undefined,
+    });
   };
 
   return (
@@ -2269,14 +2310,20 @@ function CaptureModal({
             <input className="input" value={payload.title ?? ''} onChange={(event) => setField('title', event.target.value)} />
           </label>
 
+          <div className="form-inline">
+            <label className="form-row">
+              <RequiredLabel>来源平台，可选</RequiredLabel>
+              <input className="input" value={payload.source ?? ''} onChange={(event) => setField('source', event.target.value)} />
+            </label>
+            <label className="form-row">
+              <RequiredLabel>作者名称，可选</RequiredLabel>
+              <input className="input" value={payload.author ?? ''} onChange={(event) => setField('author', event.target.value)} placeholder="例如：作者、博主、账号名" />
+            </label>
+          </div>
+
           <label className="form-row">
             <RequiredLabel required={contentRequired}>{type === 'article' || type === 'media' || type === 'image' ? '描述，可选' : '内容'}</RequiredLabel>
             <textarea className="textarea" value={payload.rawContent ?? ''} onChange={(event) => setField('rawContent', event.target.value)} placeholder="粘贴片段，或直接记录一个想法" />
-          </label>
-
-          <label className="form-row">
-            <RequiredLabel>来源平台，可选</RequiredLabel>
-            <input className="input" value={payload.source ?? ''} onChange={(event) => setField('source', event.target.value)} />
           </label>
         </div>
 

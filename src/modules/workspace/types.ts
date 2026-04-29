@@ -127,4 +127,14 @@ export type UpdateMaterialPayload = Partial<
   Pick<Material, 'title' | 'description' | 'rawContent' | 'sourceUrl' | 'source' | 'score' | 'comment' | 'materialType'>
 >;
 
+export type UpdateMaterialMetaPayload = {
+  author?: string;
+  sourcePlatform?: string;
+  publishTime?: string;
+  wordCount?: number;
+  durationSeconds?: number;
+  thumbnailKey?: string;
+  extraJson?: string;
+};
+
 export type TagSelection = Record<string, string[]>;

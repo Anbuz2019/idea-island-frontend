@@ -81,3 +81,22 @@ export function removeMaterialFromInfiniteData(
   });
   return removed ? { ...data, pages } : data;
 }
+
+export function replaceMaterialInInfiniteData(
+  data: { pages: PageResponse<Material>[]; pageParams: unknown[] } | undefined,
+  material: Material,
+) {
+  if (!data) return data;
+  let replaced = false;
+  const pages = data.pages.map((page) => {
+    let pageReplaced = false;
+    const items = page.items.map((item) => {
+      if (item.id !== material.id) return item;
+      replaced = true;
+      pageReplaced = true;
+      return material;
+    });
+    return pageReplaced ? { ...page, items } : page;
+  });
+  return replaced ? { ...data, pages } : data;
+}

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Archive, Edit3, Inbox, X } from 'lucide-react';
-import type { UIEvent } from 'react';
+import { useLayoutEffect, useRef, useState, type CSSProperties, type UIEvent } from 'react';
 import { clampText, materialTypeLabels, scoreTone, shortDate, statusLabels } from '../../../../shared/utils/format';
 import { workspaceApi } from '../../api';
 import { commentPreviewText } from '../MarkdownView';
@@ -176,6 +176,39 @@ function MaterialCard({
   const thumbnailUrl = animeStyleActive && !hasOriginalCover
     ? animeFallbackCover
     : resolvedCoverUrl;
+  const author = material.meta.author?.trim();
+  const scoreBlockRef = useRef<HTMLDivElement>(null);
+  const scoreTextRef = useRef<HTMLSpanElement>(null);
+  const commentRef = useRef<HTMLParagraphElement>(null);
+  const [commentLines, setCommentLines] = useState(0);
+
+  useLayoutEffect(() => {
+    if (!material.comment) {
+      setCommentLines(0);
+      return;
+    }
+
+    const measure = () => {
+      const block = scoreBlockRef.current;
+      const score = scoreTextRef.current;
+      const comment = commentRef.current;
+      if (!block || !score || !comment) return;
+
+      const blockStyle = window.getComputedStyle(block);
+      const commentStyle = window.getComputedStyle(comment);
+      const gap = Number.parseFloat(blockStyle.rowGap || blockStyle.gap || '0') || 0;
+      const lineHeight = Number.parseFloat(commentStyle.lineHeight) || 18;
+      const availableHeight = block.clientHeight - score.offsetHeight - gap;
+      const nextLines = Math.floor(availableHeight / lineHeight);
+      setCommentLines(nextLines >= 1 ? nextLines : 0);
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    if (scoreBlockRef.current) observer.observe(scoreBlockRef.current);
+    if (scoreTextRef.current) observer.observe(scoreTextRef.current);
+    return () => observer.disconnect();
+  }, [material.comment, material.score, material.status]);
 
   return (
     <button className={`material-card ${active ? 'active' : ''} ${unread ? 'unread' : ''}`} onClick={onClick}>
@@ -189,7 +222,7 @@ function MaterialCard({
             <StatusChip status={material.status} />
             {unread && <span className="unread-label">未读</span>}
           </div>
-          <h3 className="material-title">{material.title}</h3>
+          <h3 className="material-title">{author ? `【${author}】${material.title}` : material.title}</h3>
           <p className="material-desc">{clampText(material.description || material.rawContent, 72)}</p>
           <div className="material-footer">
             <div className="tag-row">
@@ -201,9 +234,17 @@ function MaterialCard({
         </div>
         <aside className="material-side">
           {(material.status === 'COLLECTED' || material.status === 'ARCHIVED' || material.score != null) && (
-            <div className="material-score-block">
-              <span className={`score-text ${scoreTone(material.score)}`}>{material.score?.toFixed(1) ?? '-'}</span>
-              {material.comment && <p className="material-comment">{commentPreviewText(material.comment)}</p>}
+            <div className="material-score-block" ref={scoreBlockRef}>
+              <span className={`score-text ${scoreTone(material.score)}`} ref={scoreTextRef}>{material.score?.toFixed(1) ?? '-'}</span>
+              {material.comment && (
+                <p
+                  ref={commentRef}
+                  className={`material-comment ${commentLines < 1 ? 'hidden' : ''}`}
+                  style={{ '--material-comment-lines': commentLines } as CSSProperties}
+                >
+                  {commentPreviewText(material.comment)}
+                </p>
+              )}
             </div>
           )}
           <span className="material-updated">{shortDate(statusEnteredAt(material))} 加入</span>

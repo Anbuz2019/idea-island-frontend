@@ -10,6 +10,7 @@ import type {
   SubmitMaterialPayload,
   TagGroup,
   Topic,
+  UpdateMaterialMetaPayload,
   UpdateMaterialPayload,
 } from './types';
 
@@ -320,6 +321,11 @@ export const workspaceApi = {
   updateMaterial(id: number, payload: UpdateMaterialPayload): Promise<Material> {
     if (shouldUseMockApi()) return mockRepository.updateMaterial(id, payload);
     return api.patch<ApiMaterialDetail>(`/api/v1/materials/${id}`, payload).then(mapMaterialDetail);
+  },
+
+  updateMaterialMeta(id: number, payload: UpdateMaterialMetaPayload): Promise<Material> {
+    if (shouldUseMockApi()) return mockRepository.updateMaterialMeta(id, payload);
+    return api.patch<ApiMaterialDetail>(`/api/v1/materials/${id}/meta`, payload).then(mapMaterialDetail);
   },
 
   deleteMaterial(id: number): Promise<void> {

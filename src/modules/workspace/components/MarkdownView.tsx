@@ -1,5 +1,3 @@
-import { clampText } from '../../../shared/utils/format';
-
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -107,5 +105,5 @@ export function commentPreviewText(comment?: string | null) {
   if (firstLine.startsWith('#')) {
     return firstLine.replace(/^#+\s*/, '');
   }
-  return clampText(text, 40);
+  return text.replace(/\s+/g, ' ');
 }
