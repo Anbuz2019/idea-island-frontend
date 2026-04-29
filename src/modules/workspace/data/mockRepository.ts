@@ -1,4 +1,5 @@
 import { serverTimeMs } from '../../../shared/utils/format';
+import { defaultMaterialCoverUrl } from '../defaultCovers';
 import type {
   Material,
   MaterialListParams,
@@ -616,9 +617,7 @@ export const mockRepository = {
       sourceUrl: payload.sourceUrl || '',
       score: undefined,
       comment: '',
-      coverUrl:
-        payload.coverUrl ||
-        'https://images.unsplash.com/photo-1455390582262-044cdead277a?auto=format&fit=crop&w=1200&q=80',
+      coverUrl: payload.coverUrl || defaultMaterialCoverUrl(payload.materialType),
       createdAt,
       updatedAt: createdAt,
       tags: [],

@@ -1,9 +1,9 @@
 import type { CSSProperties } from 'react';
-import { DEFAULT_MATERIAL_COVER_URL } from '../api';
+import { DEFAULT_MATERIAL_COVER_URLS } from '../defaultCovers';
 import type { Material, MaterialTag, PageResponse, TagGroup } from '../types';
 
 export function isDefaultMaterialCover(url?: string) {
-  return url === DEFAULT_MATERIAL_COVER_URL;
+  return Boolean(url && Object.values(DEFAULT_MATERIAL_COVER_URLS).includes(url));
 }
 
 export function statusEnteredAt(material: Material) {

@@ -1,6 +1,7 @@
 import { api, shouldUseMockApi } from '../../shared/api/client';
 import { DEFAULT_THEME_COLOR } from '../../shared/theme/themeColor';
 import { mockRepository } from './data/mockRepository';
+import { DEFAULT_MATERIAL_COVER_URL, defaultMaterialCoverUrl } from './defaultCovers';
 import type {
   Material,
   MaterialListParams,
@@ -85,8 +86,7 @@ type ApiTagGroupResponse = {
   sortOrder: number;
 };
 
-export const DEFAULT_MATERIAL_COVER_URL =
-  'https://images.unsplash.com/photo-1455390582262-044cdead277a?auto=format&fit=crop&w=1200&q=80';
+export { DEFAULT_MATERIAL_COVER_URL, DEFAULT_MATERIAL_COVER_URLS, defaultMaterialCoverUrl } from './defaultCovers';
 
 function paramsWithTagFilters(params: MaterialListParams) {
   const { tagFilters, ...rest } = params;
@@ -112,10 +112,11 @@ function mapMaterialDetail(detail: ApiMaterialDetail | null | undefined): Materi
   }
   const material = detail.material;
   const meta = detail.meta ?? {};
+  const materialType = (material.materialType || 'input') as MaterialType;
   return {
     id: material.id,
     topicId: material.topicId,
-    materialType: (material.materialType || 'input') as MaterialType,
+    materialType,
     status: (material.status || 'INBOX') as MaterialStatus,
     unread: Boolean(material.unread),
     title: material.title || '未命名资料',
@@ -126,7 +127,7 @@ function mapMaterialDetail(detail: ApiMaterialDetail | null | undefined): Materi
     fileKey: material.fileKey || '',
     score: material.score,
     comment: material.comment || '',
-    coverUrl: DEFAULT_MATERIAL_COVER_URL,
+    coverUrl: defaultMaterialCoverUrl(materialType),
     createdAt: material.createdAt || new Date().toISOString(),
     updatedAt: material.updatedAt || material.createdAt || new Date().toISOString(),
     inboxAt: material.inboxAt,
