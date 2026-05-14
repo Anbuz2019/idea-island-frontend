@@ -1813,7 +1813,12 @@ function MaterialDetailPanel({
             </button>
           )}
           {editing ? (
-            <textarea className="textarea" value={form.rawContent ?? ''} onChange={(event) => updateField('rawContent', event.target.value)} />
+            <textarea
+              className="textarea"
+              value={form.rawContent ?? ''}
+              onChange={(event) => updateField('rawContent', event.target.value)}
+              placeholder={form.rawContent ? undefined : '总结、归纳、整理原文内容'}
+            />
           ) : (
             <p className="read-block">{material.rawContent}</p>
           )}
@@ -1837,7 +1842,7 @@ function MaterialDetailPanel({
                 className="textarea markdown-editor"
                 value={form.comment ?? ''}
                 onChange={(event) => updateField('comment', event.target.value)}
-                placeholder="支持 Markdown：**重点**、- 列表、> 引用、`代码`、[链接](https://...)"
+                placeholder={form.comment ? undefined : '个人看法、感悟、后续行动启发'}
               />
             )
           ) : (
@@ -2018,7 +2023,7 @@ function MaterialDetailPanel({
                   className="textarea markdown-editor"
                   value={collectComment}
                   onChange={(event) => setCollectComment(event.target.value)}
-                  placeholder="支持 Markdown：**重点**、- 列表、> 引用、`代码`、[链接](https://...)"
+                  placeholder={collectComment ? undefined : '个人看法、感悟、后续行动启发'}
                 />
               )}
             </div>
@@ -2094,7 +2099,7 @@ function CaptureModal({
   onSuccess: NotifySuccess;
   onCreated: (material: Material) => void;
 }) {
-  const [type, setType] = useState<MaterialType>('article');
+  const [type, setType] = useState<MaterialType | ''>('');
   const [payload, setPayload] = useState<SubmitMaterialPayload>({
     topicId: activeTopicId ?? topics[0]?.id ?? 0,
     materialType: 'article',
@@ -2109,6 +2114,7 @@ function CaptureModal({
   const [message, setMessage] = useState('');
   const [imageUploading, setImageUploading] = useState(false);
   const [imageFileName, setImageFileName] = useState('');
+  const hasSelectedType = type !== '';
   const linkRequired = type === 'article' || type === 'media';
   const contentRequired = type === 'excerpt' || type === 'input';
   const imageRequired = type === 'image';
@@ -2218,6 +2224,10 @@ function CaptureModal({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setMessage('');
+    if (!hasSelectedType) {
+      setMessage('请先选择资料类型');
+      return;
+    }
     if (!payload.topicId) {
       setMessage('请先选择收集主题');
       return;
@@ -2240,7 +2250,7 @@ function CaptureModal({
     }
     mutation.mutate({
       ...payload,
-      materialType: type,
+      materialType: type as MaterialType,
       author: payload.author?.trim() || undefined,
     });
   };
@@ -2266,6 +2276,11 @@ function CaptureModal({
           ))}
         </div>
 
+        {!hasSelectedType ? (
+          <div className="capture-step-panel">
+            <strong>请先选择资料类型</strong>
+          </div>
+        ) : (
         <div className="form-grid">
           <label className="form-row">
             <RequiredLabel required>收集主题</RequiredLabel>
@@ -2323,9 +2338,15 @@ function CaptureModal({
 
           <label className="form-row">
             <RequiredLabel required={contentRequired}>{type === 'article' || type === 'media' || type === 'image' ? '描述，可选' : '内容'}</RequiredLabel>
-            <textarea className="textarea" value={payload.rawContent ?? ''} onChange={(event) => setField('rawContent', event.target.value)} placeholder="粘贴片段，或直接记录一个想法" />
+            <textarea
+              className="textarea"
+              value={payload.rawContent ?? ''}
+              onChange={(event) => setField('rawContent', event.target.value)}
+              placeholder={payload.rawContent ? undefined : '总结、归纳、整理原文内容'}
+            />
           </label>
         </div>
+        )}
 
         {message && <span className="muted" style={{ color: 'var(--rose)' }}>{message}</span>}
 

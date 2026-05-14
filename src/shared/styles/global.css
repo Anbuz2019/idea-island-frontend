@@ -3174,6 +3174,28 @@ a {
   gap: 8px;
 }
 
+.capture-step-panel {
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in srgb, var(--theme), transparent 78%);
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--theme), transparent 90%), color-mix(in srgb, var(--surface), transparent 18%)),
+    var(--surface);
+}
+
+.capture-step-panel strong {
+  font-size: 15px;
+  color: var(--theme);
+}
+
+.capture-step-panel p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
 .capture-tab {
   min-height: 36px;
   border: 1px solid var(--line);

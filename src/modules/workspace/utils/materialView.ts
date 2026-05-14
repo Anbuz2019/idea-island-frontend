@@ -2,6 +2,8 @@ import type { CSSProperties } from 'react';
 import { DEFAULT_MATERIAL_COVER_URLS } from '../defaultCovers';
 import type { Material, MaterialTag, PageResponse, TagGroup } from '../types';
 
+const COVER_UNAVAILABLE_THUMBNAIL_KEY = '__cover_unavailable__';
+
 export function isDefaultMaterialCover(url?: string) {
   return Boolean(url && Object.values(DEFAULT_MATERIAL_COVER_URLS).includes(url));
 }
@@ -56,9 +58,10 @@ export function materialTagsForGroups(material: Material, groups: TagGroup[]) {
 }
 
 export function materialCoverKey(material: Material) {
-  return material.materialType === 'image'
+  const key = material.materialType === 'image'
     ? material.fileKey || material.meta.thumbnailKey
     : material.meta.thumbnailKey;
+  return key === COVER_UNAVAILABLE_THUMBNAIL_KEY ? undefined : key;
 }
 
 export function flattenPages<T>(data?: { pages: PageResponse<T>[] }) {
