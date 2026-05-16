@@ -4,6 +4,7 @@ import { mockRepository } from './data/mockRepository';
 import { DEFAULT_MATERIAL_COVER_URL, defaultMaterialCoverUrl } from './defaultCovers';
 import type {
   Material,
+  LinkPreviewPayload,
   MaterialListParams,
   MaterialStatus,
   MaterialType,
@@ -303,6 +304,20 @@ export const workspaceApi = {
         thumbnailKey: payload.thumbnailKey ?? payload.fileKey,
       })
       .then((id) => workspaceApi.getMaterial(id));
+  },
+
+  previewLink(url: string): Promise<LinkPreviewPayload> {
+    if (shouldUseMockApi()) {
+      return Promise.resolve({
+        url,
+        materialType: url.includes('bilibili.com') || url.includes('b23.tv') ? 'media' : 'article',
+        title: '',
+        description: '',
+        imageUrl: '',
+        sourcePlatform: url.includes('bilibili.com') || url.includes('b23.tv') ? '哔哩哔哩' : '',
+      });
+    }
+    return api.get<LinkPreviewPayload>('/api/v1/materials/link-preview', { params: { url } });
   },
 
   async uploadFile(file: File): Promise<{ fileKey: string }> {

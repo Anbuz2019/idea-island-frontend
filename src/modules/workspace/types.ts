@@ -123,6 +123,16 @@ export type SubmitMaterialPayload = {
   tags?: MaterialTag[];
 };
 
+export type LinkPreviewPayload = {
+  url: string;
+  materialType?: MaterialType;
+  title?: string;
+  description?: string;
+  imageUrl?: string;
+  author?: string;
+  sourcePlatform?: string;
+};
+
 export type UpdateMaterialPayload = Partial<
   Pick<Material, 'title' | 'description' | 'rawContent' | 'sourceUrl' | 'source' | 'score' | 'comment' | 'materialType'>
 >;

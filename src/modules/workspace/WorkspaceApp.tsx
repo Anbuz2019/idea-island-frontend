@@ -22,6 +22,8 @@ import {
   X,
 } from 'lucide-react';
 import {
+  lazy,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -58,6 +60,7 @@ import { MarkdownView } from './components/MarkdownView';
 import { FilterPanel } from './components/filters/FilterPanel';
 import { MaterialListPane, type StatusFilterOption } from './components/materials/MaterialListPane';
 import { ProfileDashboard } from './components/profile/ProfileDashboard';
+import { buildStatsTreeData, type StatsTreeTagFilterTarget } from './components/stats/statsTreeData';
 import { useMascotSummary, type TopicSidebarCount } from './hooks/useMascotSummary';
 import { XingxianLive2DWidget } from './live2d/XingxianLive2DWidget';
 import {
@@ -94,8 +97,12 @@ import type {
 } from './types';
 
 const pageSize = 8;
+const StatsTreeMap = lazy(() => import('./components/stats/StatsTreeMap').then((module) => ({
+  default: module.StatsTreeMap,
+})));
 
 const materialTypes: MaterialType[] = ['article', 'social', 'media', 'image', 'excerpt', 'input'];
+const shareUrlPattern = /https?:\/\/[^\s"'<>，。；、）】]+/i;
 
 const animeWallpapers = Array.from(
   { length: 18 },
@@ -106,6 +113,26 @@ const animeWallpaperSessionSeed = Math.floor(Math.random() * 10000);
 function animeWallpaperForSeed(seed: number, salt = 0) {
   const index = Math.abs((seed * 37 + salt * 101 + animeWallpaperSessionSeed) % animeWallpapers.length);
   return animeWallpapers[index];
+}
+
+function extractShareUrl(text: string) {
+  return text.match(shareUrlPattern)?.[0]?.trim() ?? '';
+}
+
+function inferTypeFromUrl(url: string): MaterialType {
+  const lowerUrl = url.toLowerCase();
+  if (lowerUrl.includes('bilibili.com/video/') || lowerUrl.includes('b23.tv/') || /\.(mp4|mov|m4v|webm)(\?.*)?$/.test(lowerUrl)) {
+    return 'media';
+  }
+  if (/\.(jpg|jpeg|png|gif|webp|bmp)(\?.*)?$/.test(lowerUrl)) {
+    return 'image';
+  }
+  return 'article';
+}
+
+function titleFromShareText(text: string, url: string) {
+  const withoutUrl = text.replace(url, '').replace(/[【】]/g, ' ').replace(/\s+/g, ' ').trim();
+  return withoutUrl.length > 120 ? `${withoutUrl.slice(0, 120)}...` : withoutUrl;
 }
 
 const viewLabels: Record<ViewKey, string> = {
@@ -707,6 +734,37 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
     setSelectedSettingsTopicId((current) => current ?? activeTopic?.id);
   };
 
+  const openLibraryWithStatsTagFilter = (target: StatsTreeTagFilterTarget) => {
+    const nextView: ViewKey = 'library';
+    const filterKey = workspaceFilterKey(nextView, target.topicId);
+    setActiveTopicId(target.topicId);
+    setSelectedMaterialId(undefined);
+    saveWorkspacePrefs((current) => ({
+      ...current,
+      activeView: nextView,
+      activeTopicId: target.topicId,
+      filterPanelCollapsed: {
+        ...(current.filterPanelCollapsed ?? {}),
+        [filterKey]: false,
+      },
+      filters: {
+        ...(current.filters ?? {}),
+        [filterKey]: {
+          keyword: '',
+          sortBy: 'statusAt',
+          statusFilter: [],
+          typeFilter: [],
+          tagFilters: {
+            [String(target.groupId)]: target.values,
+          },
+          unreadOnly: false,
+        },
+      },
+    }));
+    setActiveView(nextView);
+    window.history.pushState(null, '', viewPaths[nextView]);
+  };
+
   const invalidateWorkspace = () => {
     void queryClient.invalidateQueries();
   };
@@ -779,7 +837,7 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
             onSuccess={notifySuccess}
           />
         ) : activeView === 'stats' ? (
-          <StatsPlaceholder />
+          <XmindStatsDashboard topics={topics} topicCounts={topicCounts} onOpenTagFilter={openLibraryWithStatsTagFilter} />
         ) : activeView === 'assistant' ? (
           <AssistantPlaceholder />
         ) : activeView === 'profile' ? (
@@ -1337,6 +1395,25 @@ function WorkspaceView({
             { value: 'INVALID', label: '已失效', statuses: ['INVALID'] },
           ];
 
+  const hasActiveFilters = Boolean(keyword.trim())
+    || sortBy !== 'statusAt'
+    || typeFilter.length > 0
+    || selectedTagsCount > 0
+    || statusFilter.length > 0
+    || unreadOnly;
+
+  const clearFilters = () => {
+    setKeyword('');
+    setSortBy('statusAt');
+    setTypeFilter([]);
+    setTagFilters({});
+    setStatusFilter([]);
+    setUnreadOnly(false);
+    setUnreadSessionIds([]);
+    setTagMenuOpen(false);
+    onSelectMaterial(undefined);
+  };
+
   if (isMobile && selectedId) {
     return (
       <section className="workspace mobile-detail-workspace">
@@ -1371,6 +1448,8 @@ function WorkspaceView({
                 tagMenuOpen={tagMenuOpen}
                 setTagMenuOpen={setTagMenuOpen}
                 toggleTag={toggleTag}
+                hasActiveFilters={hasActiveFilters}
+                onClearFilters={clearFilters}
                 showTopicHint
               />
               <MaterialListPane
@@ -1416,6 +1495,8 @@ function WorkspaceView({
               tagMenuOpen={tagMenuOpen}
               setTagMenuOpen={setTagMenuOpen}
               toggleTag={toggleTag}
+              hasActiveFilters={hasActiveFilters}
+              onClearFilters={clearFilters}
             />
             <MaterialListPane
               title={view === 'library' ? '资料预览' : view === 'invalid' ? '失效资料' : '待处理资料'}
@@ -2112,6 +2193,8 @@ function CaptureModal({
     coverUrl: '',
   });
   const [message, setMessage] = useState('');
+  const [shareText, setShareText] = useState('');
+  const [importingShare, setImportingShare] = useState(false);
   const [imageUploading, setImageUploading] = useState(false);
   const [imageFileName, setImageFileName] = useState('');
   const hasSelectedType = type !== '';
@@ -2131,6 +2214,48 @@ function CaptureModal({
     },
     onError: (error) => setMessage(errorMessage(error)),
   });
+
+  const importShare = async (text: string) => {
+    const url = extractShareUrl(text);
+    if (!url) {
+      setMessage('未识别到可导入的链接');
+      return;
+    }
+    setMessage('');
+    setImportingShare(true);
+    const fallbackTitle = titleFromShareText(text, url);
+    const inferredType = inferTypeFromUrl(url);
+    setType(inferredType);
+    setPayload((current) => ({
+      ...current,
+      materialType: inferredType,
+      sourceUrl: url,
+      title: current.title || fallbackTitle,
+      rawContent: current.rawContent,
+    }));
+    try {
+      const preview = await workspaceApi.previewLink(url);
+      const previewType = preview.materialType ?? inferredType;
+      setType(previewType);
+      setPayload((current) => ({
+        ...current,
+        materialType: previewType,
+        sourceUrl: preview.url || url,
+        title: preview.title || current.title || fallbackTitle,
+        description: preview.description || current.description || '',
+        rawContent: current.rawContent || preview.description || '',
+        source: preview.sourcePlatform || current.source || '',
+        sourcePlatform: preview.sourcePlatform || current.sourcePlatform,
+        author: preview.author || current.author || '',
+        coverUrl: preview.imageUrl || current.coverUrl || '',
+      }));
+      setMessage(preview.title || preview.description || preview.author ? '已根据分享链接预填资料，可继续编辑后提交' : '已识别链接，可继续补充信息后提交');
+    } catch (error) {
+      setMessage(`链接信息提取失败：${errorMessage(error)}，已保留链接可手动补充`);
+    } finally {
+      setImportingShare(false);
+    }
+  };
 
   const setField = (field: keyof SubmitMaterialPayload, value: string | number) => {
     setPayload((current) => ({ ...current, [field]: value }));
@@ -2209,13 +2334,26 @@ function CaptureModal({
 
   const handlePaste = (event: ReactClipboardEvent<HTMLFormElement>) => {
     event.stopPropagation();
-    handlePasteImage(event.clipboardData, () => event.preventDefault());
+    if (handlePasteImage(event.clipboardData, () => event.preventDefault())) return;
+    const pastedText = event.clipboardData.getData('text');
+    if (extractShareUrl(pastedText)) {
+      event.preventDefault();
+      setShareText(pastedText);
+      void importShare(pastedText);
+    }
   };
 
   useEffect(() => {
     const listener = (event: ClipboardEvent) => {
       if (event.defaultPrevented || !event.clipboardData) return;
-      handlePasteImage(event.clipboardData, () => event.preventDefault());
+      if (handlePasteImage(event.clipboardData, () => event.preventDefault())) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      const pastedText = event.clipboardData.getData('text');
+      if (!extractShareUrl(pastedText)) return;
+      event.preventDefault();
+      setShareText(pastedText);
+      void importShare(pastedText);
     };
     window.addEventListener('paste', listener);
     return () => window.removeEventListener('paste', listener);
@@ -2261,6 +2399,31 @@ function CaptureModal({
         <div className="settings-head" style={{ paddingBottom: 0, borderBottom: 0 }}>
           <h2>快速采集</h2>
           <button className="btn compact ghost" type="button" onClick={onClose}><X size={16} /></button>
+        </div>
+
+        <div className="share-import-panel">
+          <label className="form-row">
+            <span>分享链接一键导入</span>
+            <div className="share-import-row">
+              <textarea
+                className="textarea share-import-input"
+                value={shareText}
+                onChange={(event) => setShareText(event.target.value)}
+                onBlur={() => {
+                  if (extractShareUrl(shareText) && !payload.sourceUrl) void importShare(shareText);
+                }}
+                placeholder="粘贴分享文字或链接，例如 B 站、文章链接"
+              />
+              <button
+                type="button"
+                className="btn compact primary"
+                disabled={importingShare}
+                onClick={() => importShare(shareText)}
+              >
+                {importingShare ? '提取中' : '提取'}
+              </button>
+            </div>
+          </label>
         </div>
 
         <div className="capture-tabs">
@@ -2348,7 +2511,7 @@ function CaptureModal({
         </div>
         )}
 
-        {message && <span className="muted" style={{ color: 'var(--rose)' }}>{message}</span>}
+        {message && <span className="muted" style={{ color: message.startsWith('已') ? 'var(--theme)' : 'var(--rose)' }}>{message}</span>}
 
         <div className="modal-actions">
           <button type="button" className="btn ghost" onClick={onClose}>取消</button>
@@ -2731,6 +2894,382 @@ function getSettingsSuccessText(modal: SettingsModal) {
   if (modal.mode === 'create') return '标签已添加';
   if (modal.mode === 'edit') return '标签已保存';
   return '标签已删除';
+}
+
+function XmindStatsDashboard({
+  topics,
+  topicCounts,
+  onOpenTagFilter,
+}: {
+  topics: Topic[];
+  topicCounts: Record<number, TopicSidebarCount>;
+  onOpenTagFilter: (target: StatsTreeTagFilterTarget) => void;
+}) {
+  const totalStats = useMemo(
+    () => topics.reduce(
+      (summary, topic) => {
+        const count = topicCounts[topic.id];
+        const library = count?.library ?? 0;
+        return {
+          inbox: summary.inbox,
+          library: summary.library + library,
+          unread: summary.unread,
+          total: summary.total + library,
+        };
+      },
+      { inbox: 0, library: 0, unread: 0, total: 0 },
+    ),
+    [topicCounts, topics],
+  );
+  const tagGroupQueries = useQueries({
+    queries: topics.map((topic) => ({
+      queryKey: queryKeys.tagGroups(topic.id),
+      queryFn: () => workspaceApi.listTagGroups(topic.id),
+      enabled: Boolean(topic.id),
+    })),
+  });
+  const topicTagGroups = useMemo(() => {
+    const groupsByTopic: Record<number, TagGroup[]> = {};
+    topics.forEach((topic, index) => {
+      groupsByTopic[topic.id] = tagGroupQueries[index]?.data ?? [];
+    });
+    return groupsByTopic;
+  }, [tagGroupQueries, topics]);
+  const tagCountSpecs = useMemo(() => topics.flatMap((topic) => (topicTagGroups[topic.id] ?? []).flatMap((group) => {
+    const groupKey = group.tagGroupKey ?? String(group.id);
+    return group.values.map((tag) => ({
+      topicId: topic.id,
+      groupId: group.id,
+      groupKey,
+      tagValue: tag.value,
+    }));
+  })), [topicTagGroups, topics]);
+  const tagCountQueries = useQueries({
+    queries: tagCountSpecs.map((spec) => ({
+      queryKey: ['stats-tag-count', spec.topicId, spec.groupId, spec.tagValue] as const,
+      queryFn: () => workspaceApi.listMaterials({
+        topicId: spec.topicId,
+        status: ['COLLECTED', 'ARCHIVED'],
+        tagFilters: { [spec.groupKey]: [spec.tagValue] },
+        page: 1,
+        pageSize: 1,
+      }),
+    })),
+  });
+  const tagCountMap = useMemo(() => {
+    const counts: Record<string, number> = {};
+    tagCountSpecs.forEach((spec, index) => {
+      counts[`${spec.topicId}:${spec.groupId}:${spec.tagValue}`] = tagCountQueries[index]?.data?.total ?? 0;
+    });
+    return counts;
+  }, [tagCountQueries, tagCountSpecs]);
+  const statsTreeData = useMemo(() => buildStatsTreeData({
+    topics,
+    topicCounts,
+    topicTagGroups,
+    tagCountMap,
+    total: totalStats.total,
+  }), [tagCountMap, topicCounts, topicTagGroups, topics, totalStats.total]);
+
+  return (
+    <section className="workspace">
+      <div className="settings-page stats-dashboard">
+        <div className="stats-overview-grid">
+          <StatsMetric label="主题数量" value={topics.length} />
+          <StatsMetric label="资料总数" value={totalStats.total} />
+          <StatsMetric label="待处理" value={totalStats.inbox} />
+          <StatsMetric label="未读提醒" value={totalStats.unread} />
+        </div>
+
+        <Suspense fallback={<div className="stats-d3-tree-shell stats-d3-tree-loading">正在生成统计图...</div>}>
+          <StatsTreeMap data={statsTreeData} topicCount={topics.length} onOpenTagFilter={onOpenTagFilter} />
+        </Suspense>
+      </div>
+    </section>
+  );
+}
+
+function XmindTopicBranch({
+  topic,
+  count,
+  expanded,
+  maxTotal,
+  onToggle,
+}: {
+  topic: Topic;
+  count?: TopicSidebarCount;
+  expanded: boolean;
+  maxTotal: number;
+  onToggle: () => void;
+}) {
+  const total = count?.total ?? topic.materialCount ?? 0;
+  const unread = (count?.unreadInbox ?? 0) + (count?.unreadLibrary ?? 0);
+  return (
+    <div className={`xmind-branch ${expanded ? 'expanded' : ''}`}>
+      <button type="button" className="xmind-topic-node" onClick={onToggle}>
+        <span className="xmind-topic-title">
+          <Tags size={15} />
+          <strong>{topic.name}</strong>
+          <em>{total}</em>
+        </span>
+        <span className="xmind-topic-bar">
+          <i style={{ width: `${Math.max(8, Math.round((total / maxTotal) * 100))}%` }} />
+        </span>
+      </button>
+      {expanded && (
+        <div className="xmind-children">
+          <XmindChildNode icon={<Inbox size={14} />} label="收件箱" value={count?.inbox ?? 0} />
+          <XmindChildNode icon={<Archive size={14} />} label="资料库" value={count?.library ?? 0} />
+          <XmindChildNode label="未读" value={unread} />
+          {topic.description && <div className="xmind-note">{topic.description}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function XmindChildNode({ icon, label, value }: { icon?: ReactNode; label: string; value: number }) {
+  return (
+    <div className="xmind-child-node">
+      <span>{icon}{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function TagTreeDetails({
+  topic,
+  tagGroups,
+  tagCountMap,
+}: {
+  topic?: Topic;
+  tagGroups: TagGroup[];
+  tagCountMap: Record<string, number>;
+}) {
+  if (!topic) {
+    return <div className="tag-tree-detail empty">选择一个主题查看标签树</div>;
+  }
+  if (!tagGroups.length) {
+    return (
+      <div className="tag-tree-detail empty">
+        <strong>{topic.name}</strong>
+        <span>暂无可统计的标签组</span>
+      </div>
+    );
+  }
+  return (
+    <div className="tag-tree-detail">
+      {tagGroups.map((group) => (
+        <div className="tag-tree-group" key={group.id}>
+          <div className="tag-tree-group-node" style={tagStyle(group)}>
+            <span>{group.name}</span>
+            <strong>{group.values.reduce((sum, tag) => sum + (tagCountMap[`${topic.id}:${group.id}:${tag.value}`] ?? 0), 0)}</strong>
+          </div>
+          <div className="tag-tree-tag-list" style={tagStyle(group)}>
+            {group.values.map((tag) => (
+              <div className="tag-tree-tag-node" key={tag.id}>
+                <span># {tag.value}</span>
+                <strong>{tagCountMap[`${topic.id}:${group.id}:${tag.value}`] ?? 0}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function XmindTagTopicBranch({
+  topic,
+  count,
+  tagGroups,
+  tagCountMap,
+  expanded,
+  maxTotal,
+  onToggle,
+}: {
+  topic: Topic;
+  count?: TopicSidebarCount;
+  tagGroups: TagGroup[];
+  tagCountMap: Record<string, number>;
+  expanded: boolean;
+  maxTotal: number;
+  onToggle: () => void;
+}) {
+  const libraryTotal = count?.library ?? 0;
+  return (
+    <div className={`xmind-branch ${expanded ? 'expanded' : ''}`}>
+      <button type="button" className="xmind-topic-node" onClick={onToggle}>
+        <span className="xmind-topic-title">
+          <Tags size={15} />
+          <strong>{topic.name}</strong>
+          <em>{libraryTotal}</em>
+        </span>
+        <span className="xmind-topic-bar">
+          <i style={{ width: `${Math.max(8, Math.round((libraryTotal / maxTotal) * 100))}%` }} />
+        </span>
+      </button>
+      {expanded && (
+        <div className="xmind-children">
+          {tagGroups.length > 0 ? tagGroups.map((group) => (
+            <div className="xmind-tag-group" key={group.id}>
+              <div className="xmind-group-node" style={tagStyle(group)}>
+                <span>{group.name}</span>
+                <strong>{group.values.reduce((sum, tag) => sum + (tagCountMap[`${topic.id}:${group.id}:${tag.value}`] ?? 0), 0)}</strong>
+              </div>
+              <div className="xmind-tag-list" style={tagStyle(group)}>
+                {group.values.map((tag) => (
+                  <XmindChildNode
+                    key={tag.id}
+                    label={`# ${tag.value}`}
+                    value={tagCountMap[`${topic.id}:${group.id}:${tag.value}`] ?? 0}
+                  />
+                ))}
+              </div>
+            </div>
+          )) : (
+            <div className="xmind-note">暂无可统计的标签组</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatsDashboard({
+  topics,
+  topicCounts,
+}: {
+  topics: Topic[];
+  topicCounts: Record<number, TopicSidebarCount>;
+}) {
+  const [expandedTopicId, setExpandedTopicId] = useState<number | undefined>(topics[0]?.id);
+  const totalStats = useMemo(
+    () => topics.reduce(
+      (summary, topic) => {
+        const count = topicCounts[topic.id];
+        return {
+          inbox: summary.inbox + (count?.inbox ?? 0),
+          library: summary.library + (count?.library ?? 0),
+          unread: summary.unread + (count?.unreadInbox ?? 0) + (count?.unreadLibrary ?? 0),
+          total: summary.total + (count?.total ?? 0),
+        };
+      },
+      { inbox: 0, library: 0, unread: 0, total: 0 },
+    ),
+    [topicCounts, topics],
+  );
+  const expandedTopic = topics.find((topic) => topic.id === expandedTopicId) ?? topics[0];
+  const expandedCounts = expandedTopic ? topicCounts[expandedTopic.id] : undefined;
+  const maxTopicTotal = Math.max(1, ...topics.map((topic) => topicCounts[topic.id]?.total ?? topic.materialCount ?? 0));
+
+  return (
+    <section className="workspace">
+      <div className="settings-page stats-dashboard">
+        <div className="settings-head">
+          <div>
+            <h2>统计</h2>
+            <p className="subtitle">查看所有主题的资料沉淀结构，点击主题节点展开详情。</p>
+          </div>
+        </div>
+
+        <div className="stats-overview-grid">
+          <StatsMetric label="主题数量" value={topics.length} />
+          <StatsMetric label="资料总数" value={totalStats.total} />
+          <StatsMetric label="待处理" value={totalStats.inbox} />
+          <StatsMetric label="未读提醒" value={totalStats.unread} />
+        </div>
+
+        <div className="topic-graph-shell">
+          <div className="topic-graph-center">
+            <div className="topic-graph-hub">
+              <BarChart3 size={22} />
+              <strong>全部主题</strong>
+              <span>{totalStats.total} 条资料</span>
+            </div>
+          </div>
+          <div className="topic-graph">
+            {topics.map((topic) => {
+              const count = topicCounts[topic.id];
+              const total = count?.total ?? topic.materialCount ?? 0;
+              const active = topic.id === expandedTopic?.id;
+              const unread = (count?.unreadInbox ?? 0) + (count?.unreadLibrary ?? 0);
+              return (
+                <button
+                  type="button"
+                  key={topic.id}
+                  className={`topic-graph-node ${active ? 'active' : ''}`}
+                  onClick={() => setExpandedTopicId((current) => current === topic.id ? undefined : topic.id)}
+                >
+                  <span className="topic-graph-node-head">
+                    <Tags size={15} />
+                    <strong>{topic.name}</strong>
+                    <em>{total}</em>
+                  </span>
+                  <span className="topic-graph-bar">
+                    <i style={{ width: `${Math.max(8, Math.round((total / maxTopicTotal) * 100))}%` }} />
+                  </span>
+                  <span className="topic-graph-node-meta">
+                    <span>收件箱 {count?.inbox ?? 0}</span>
+                    <span>资料库 {count?.library ?? 0}</span>
+                    {unread > 0 && <span>未读 {unread}</span>}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {expandedTopic ? (
+          <div className="topic-expand-card">
+            <div className="topic-expand-head">
+              <div>
+                <span>当前展开</span>
+                <h3>{expandedTopic.name}</h3>
+              </div>
+              <button type="button" className="btn compact ghost" onClick={() => setExpandedTopicId(undefined)}>收起</button>
+            </div>
+            <p>{expandedTopic.description || '暂无主题说明。'}</p>
+            <div className="topic-expand-grid">
+              <StatsMetric label="主题资料" value={expandedCounts?.total ?? expandedTopic.materialCount ?? 0} />
+              <StatsMetric label="收件箱" value={expandedCounts?.inbox ?? 0} icon={<Inbox size={16} />} />
+              <StatsMetric label="资料库" value={expandedCounts?.library ?? 0} icon={<Archive size={16} />} />
+              <StatsMetric label="未读" value={(expandedCounts?.unreadInbox ?? 0) + (expandedCounts?.unreadLibrary ?? 0)} />
+            </div>
+            <div className="topic-expand-bars">
+              <StatsDistribution label="收件箱" value={expandedCounts?.inbox ?? 0} total={expandedCounts?.total ?? 0} />
+              <StatsDistribution label="资料库" value={expandedCounts?.library ?? 0} total={expandedCounts?.total ?? 0} />
+              <StatsDistribution label="未读" value={(expandedCounts?.unreadInbox ?? 0) + (expandedCounts?.unreadLibrary ?? 0)} total={expandedCounts?.total ?? 0} />
+            </div>
+          </div>
+        ) : (
+          <div className="empty-state stats-empty-hint">选择任意主题节点查看展开信息。</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function StatsMetric({ label, value, icon }: { label: string; value: number; icon?: ReactNode }) {
+  return (
+    <div className="stats-metric">
+      <span>{icon}{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function StatsDistribution({ label, value, total }: { label: string; value: number; total: number }) {
+  const percent = total > 0 ? Math.round((value / total) * 100) : 0;
+  return (
+    <div className="stats-distribution">
+      <div>
+        <span>{label}</span>
+        <strong>{value} 条 · {percent}%</strong>
+      </div>
+      <i><b style={{ width: `${percent}%` }} /></i>
+    </div>
+  );
 }
 
 function StatsPlaceholder() {

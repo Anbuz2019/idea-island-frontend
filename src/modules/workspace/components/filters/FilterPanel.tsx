@@ -21,6 +21,8 @@ export function FilterPanel({
   tagMenuOpen,
   setTagMenuOpen,
   toggleTag,
+  hasActiveFilters,
+  onClearFilters,
   showTopicHint,
   defaultCollapsed = true,
 }: {
@@ -38,6 +40,8 @@ export function FilterPanel({
   tagMenuOpen: boolean;
   setTagMenuOpen: (value: boolean) => void;
   toggleTag: (group: TagGroup, value: string) => void;
+  hasActiveFilters: boolean;
+  onClearFilters: () => void;
   showTopicHint?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(() => readWorkspacePrefs().filterPanelCollapsed?.[prefsKey] ?? defaultCollapsed);
@@ -51,6 +55,9 @@ export function FilterPanel({
     typeFilter.length ? `${typeFilter.length} 个类型` : '',
     selectedTagsCount ? `${selectedTagsCount} 个标签` : '',
   ].filter(Boolean);
+  const activeTagChips = tagGroups.flatMap((group) =>
+    (tagFilters[String(group.id)] ?? []).map((value) => ({ key: `${group.id}-${value}`, value, group })),
+  );
 
   const toggleCollapsed = () => {
     setCollapsed((current) => {
@@ -78,6 +85,25 @@ export function FilterPanel({
           {collapsed ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
       </div>
+
+      {(activeTagChips.length > 0 || hasActiveFilters) && (
+        <div className="filter-active-row">
+          <div className="filter-active-tags">
+            {activeTagChips.length > 0 ? (
+              activeTagChips.map(({ key, value, group }) => (
+                <span key={key} className="tag-chip" style={tagStyle(group)}>
+                  <span className="tag-hash">#</span>{value}
+                </span>
+              ))
+            ) : (
+              <span className="muted">已设置筛选条件</span>
+            )}
+          </div>
+          <button type="button" className="btn compact ghost filter-clear" onClick={onClearFilters}>
+            清除筛选
+          </button>
+        </div>
+      )}
 
       {!collapsed && (
         <>
