@@ -3013,15 +3013,14 @@ a {
 }
 
 .stats-d3-inline-tags {
-  min-width: 0;
-  max-width: 780px;
+  width: max-content;
+  max-width: none;
   height: 36px;
   display: flex;
+  flex: none;
   align-items: center;
   gap: 7px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
+  overflow: visible;
 }
 
 .stats-d3-inline-tag {

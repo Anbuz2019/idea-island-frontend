@@ -32,7 +32,13 @@ function statsTreePathClass(link: TreeLinkDatum) {
 
 function inlineGroupWidth(tags: StatsTreeInlineTag[]) {
   if (!tags.length) return statsTreeGroupInlineBaseWidth;
-  return Math.min(980, statsTreeGroupInlineBaseWidth + 18 + tags.length * 106);
+  const tagsWidth = tags.reduce((total, tag) => {
+    const labelWidth = Math.max(72, tag.value.length * 15 + 34);
+    const countWidth = String(tag.count).length * 9 + 18;
+    return total + labelWidth + countWidth;
+  }, 0);
+  const gapsWidth = Math.max(0, tags.length - 1) * 7;
+  return statsTreeGroupInlineBaseWidth + 18 + tagsWidth + gapsWidth;
 }
 
 function collectGroupNodeKeys(node: StatsTreeNode): string[] {
