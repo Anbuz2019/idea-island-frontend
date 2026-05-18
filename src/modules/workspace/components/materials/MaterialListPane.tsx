@@ -13,6 +13,7 @@ import {
   materialTagsForGroups,
   statusEnteredAt,
   tagStyle,
+  tagTooltip,
 } from '../../utils/materialView';
 
 export type StatusFilterOption = {
@@ -177,6 +178,7 @@ function MaterialCard({
     ? animeFallbackCover
     : resolvedCoverUrl;
   const author = material.meta.author?.trim();
+  const descriptionText = clampText(material.description || material.rawContent, 72);
   const scoreBlockRef = useRef<HTMLDivElement>(null);
   const scoreTextRef = useRef<HTMLSpanElement>(null);
   const commentRef = useRef<HTMLParagraphElement>(null);
@@ -222,8 +224,11 @@ function MaterialCard({
             <StatusChip status={material.status} />
             {unread && <span className="unread-label">未读</span>}
           </div>
-          <h3 className="material-title">{author ? `【${author}】${material.title}` : material.title}</h3>
-          <p className="material-desc">{clampText(material.description || material.rawContent, 72)}</p>
+          <h3 className="material-title">{material.title}</h3>
+          <p className="material-desc">
+            {author && <span className="material-author-inline">【{author}】</span>}
+            {descriptionText}
+          </p>
           <div className="material-footer">
             <div className="tag-row">
               {materialTagsForGroups(material, tagGroups).map((tag) => (
@@ -280,7 +285,7 @@ function StatusIcon({ status }: { status: MaterialStatus }) {
 
 function TagChip({ tag, group }: { tag: MaterialTag; group?: TagGroup }) {
   return (
-    <span className="tag-chip" style={tagStyle(group)}>
+    <span className="tag-chip" style={tagStyle(group)} data-tag-tooltip={tagTooltip(group)}>
       <span className="tag-hash">#</span>{tag.tagValue}
     </span>
   );

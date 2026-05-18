@@ -693,6 +693,38 @@ export const mockRepository = {
     return delay(state.materials.find((material) => material.id === id)!);
   },
 
+  async moveMaterialToTopicInbox(id: number, targetTopicId: number) {
+    const state = readState();
+    const material = state.materials.find((entry) => entry.id === id);
+    if (!material) throw { code: 404, message: '资源不存在' };
+
+    state.materials = state.materials.map((entry) =>
+      entry.id === id
+        ? {
+            ...entry,
+            topicId: targetTopicId,
+            status: 'INBOX' as MaterialStatus,
+            unread: true,
+            tags: [],
+            score: entry.score,
+            comment: entry.comment,
+            updatedAt: new Date().toISOString(),
+          }
+        : entry,
+    );
+    state.topics = state.topics.map((topic) => {
+      if (topic.id === material.topicId) {
+        return { ...topic, materialCount: Math.max((topic.materialCount ?? 0) - 1, 0) };
+      }
+      if (topic.id === targetTopicId) {
+        return { ...topic, materialCount: (topic.materialCount ?? 0) + 1 };
+      }
+      return topic;
+    });
+    writeState(state);
+    return delay(state.materials.find((entry) => entry.id === id)!);
+  },
+
   async transitionMaterial(
     id: number,
     status: MaterialStatus,

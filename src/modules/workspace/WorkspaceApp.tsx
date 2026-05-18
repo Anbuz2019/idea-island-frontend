@@ -18,6 +18,7 @@ import {
   Shield,
   Tags,
   Trash2,
+  MoveRight,
   User,
   X,
 } from 'lucide-react';
@@ -71,11 +72,14 @@ import {
   isMaterialUnread,
   materialCoverKey,
   tagStyle,
+  tagTooltip,
 } from './utils/materialView';
 import {
   applyInterfaceStyle,
   readInterfaceStyle,
+  readMascotEnabled,
   readWorkspacePrefs,
+  saveMascotEnabled,
   saveWorkspacePrefs,
   workspaceFilterKey,
   type WorkspaceFilterPrefs,
@@ -542,9 +546,15 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
   const [selectedMaterialId, setSelectedMaterialIdState] = useState<number | undefined>();
   const [captureOpen, setCaptureOpen] = useState(false);
   const [successNotice, setSuccessNotice] = useState<{ id: number; text: string }>();
+  const [mascotEnabled, setMascotEnabled] = useState(readMascotEnabled);
 
   const notifySuccess: NotifySuccess = (text) => {
     setSuccessNotice({ id: Date.now(), text });
+  };
+
+  const changeMascotEnabled = (enabled: boolean) => {
+    setMascotEnabled(saveMascotEnabled(enabled));
+    notifySuccess(enabled ? '沐沐助手已开启' : '沐沐助手已关闭');
   };
 
   useEffect(() => {
@@ -765,6 +775,34 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
     window.history.pushState(null, '', viewPaths[nextView]);
   };
 
+  const openLibraryWithStatsTopic = (topicId: number) => {
+    const nextView: ViewKey = 'library';
+    const filterKey = workspaceFilterKey(nextView, topicId);
+    setActiveTopicId(topicId);
+    setSelectedMaterialId(undefined);
+    saveWorkspacePrefs((current) => ({
+      ...current,
+      activeView: nextView,
+      activeTopicId: topicId,
+      filterPanelCollapsed: {
+        ...(current.filterPanelCollapsed ?? {}),
+        [filterKey]: true,
+      },
+      filters: {
+        ...(current.filters ?? {}),
+        [filterKey]: {
+          keyword: '',
+          sortBy: 'statusAt',
+          statusFilter: ['COLLECTED'],
+          typeFilter: [],
+          tagFilters: {},
+          unreadOnly: false,
+        },
+      },
+    }));
+    setActiveView(nextView);
+    window.history.pushState(null, '', viewPaths[nextView]);
+  };
   const invalidateWorkspace = () => {
     void queryClient.invalidateQueries();
   };
@@ -837,15 +875,23 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
             onSuccess={notifySuccess}
           />
         ) : activeView === 'stats' ? (
-          <XmindStatsDashboard topics={topics} topicCounts={topicCounts} onOpenTagFilter={openLibraryWithStatsTagFilter} />
+          <XmindStatsDashboard topics={topics} topicCounts={topicCounts} onOpenTagFilter={openLibraryWithStatsTagFilter} onOpenTopicLibrary={openLibraryWithStatsTopic} />
         ) : activeView === 'assistant' ? (
           <AssistantPlaceholder />
         ) : activeView === 'profile' ? (
-          <ProfileDashboard topics={topics} topicCounts={topicCounts} onLogout={onLogout} onSuccess={notifySuccess} />
+          <ProfileDashboard
+            topics={topics}
+            topicCounts={topicCounts}
+            mascotEnabled={mascotEnabled}
+            onMascotEnabledChange={changeMascotEnabled}
+            onLogout={onLogout}
+            onSuccess={notifySuccess}
+          />
         ) : (
           <WorkspaceView
             view={activeView}
             activeTopic={activeTopic}
+            topics={topics}
             selectedMaterialId={selectedMaterialId}
             onSelectMaterial={setSelectedMaterialId}
             onReadMaterial={(material) => {
@@ -883,18 +929,71 @@ function AuthenticatedWorkspace({ onLogout }: { onLogout: () => void }) {
           }}
         />
       )}
-      <XingxianLive2DWidget
-        viewLabel={viewLabels[activeView]}
-        captureOpen={captureOpen}
-        noticeText={successNotice?.text}
-        workspaceSummary={mascotSummary}
-        materialSummary={mascotMaterialSummary}
-      />
+      {mascotEnabled && (
+        <XingxianLive2DWidget
+          viewLabel={viewLabels[activeView]}
+          captureOpen={captureOpen}
+          noticeText={successNotice?.text}
+          workspaceSummary={mascotSummary}
+          materialSummary={mascotMaterialSummary}
+        />
+      )}
+      <TagHoverTooltip />
       <SuccessPopup notice={successNotice} onClose={() => setSuccessNotice(undefined)} />
     </div>
   );
 }
 
+function TagHoverTooltip() {
+  const [tooltip, setTooltip] = useState<{ text: string; left: number; top: number }>();
+
+  useEffect(() => {
+    const show = (event: PointerEvent) => {
+      const target = event.target instanceof Element
+        ? event.target.closest<HTMLElement>('[data-tag-tooltip]')
+        : null;
+      const text = target?.dataset.tagTooltip?.trim();
+      if (!target || !text) {
+        setTooltip(undefined);
+        return;
+      }
+      const rect = target.getBoundingClientRect();
+      setTooltip({
+        text,
+        left: Math.round(rect.left + rect.width / 2),
+        top: Math.round(rect.bottom + 12),
+      });
+    };
+    const hide = (event: PointerEvent) => {
+      const target = event.target instanceof Element
+        ? event.target.closest<HTMLElement>('[data-tag-tooltip]')
+        : null;
+      const related = event.relatedTarget instanceof Element
+        ? event.relatedTarget.closest<HTMLElement>('[data-tag-tooltip]')
+        : null;
+      if (target && target === related) return;
+      setTooltip(undefined);
+    };
+    const clear = () => setTooltip(undefined);
+    document.addEventListener('pointerover', show);
+    document.addEventListener('pointerout', hide);
+    window.addEventListener('scroll', clear, true);
+    window.addEventListener('resize', clear);
+    return () => {
+      document.removeEventListener('pointerover', show);
+      document.removeEventListener('pointerout', hide);
+      window.removeEventListener('scroll', clear, true);
+      window.removeEventListener('resize', clear);
+    };
+  }, []);
+
+  if (!tooltip) return null;
+  return (
+    <div className="tag-hover-tooltip" style={{ left: tooltip.left, top: tooltip.top }}>
+      {tooltip.text}
+    </div>
+  );
+}
 function MobileTopicSwitcher({
   topics,
   activeTopicId,
@@ -1011,7 +1110,7 @@ function Sidebar({
         <Plus size={18} /> 采集资料
       </button>
 
-      <nav className="nav-group">
+      <nav className="nav-group workspace-nav">
         <p className="nav-section-title">工作区</p>
         <div className={`topic-nav ${topicCollapsed ? 'collapsed' : ''}`}>
           <button className="nav-section-toggle" type="button" onClick={toggleTopicCollapsed} aria-expanded={!topicCollapsed}>
@@ -1120,6 +1219,7 @@ function MobileBar({
 function WorkspaceView({
   view,
   activeTopic,
+  topics,
   selectedMaterialId,
   onSelectMaterial,
   onReadMaterial,
@@ -1128,6 +1228,7 @@ function WorkspaceView({
 }: {
   view: Exclude<ViewKey, 'topicSettings' | 'stats' | 'assistant' | 'profile'>;
   activeTopic?: Topic;
+  topics: Topic[];
   selectedMaterialId?: number;
   onSelectMaterial: (id: number | undefined) => void;
   onReadMaterial: (material: Material) => void;
@@ -1421,7 +1522,7 @@ function WorkspaceView({
           <button className="btn compact ghost mobile-back-button" type="button" onClick={() => onSelectMaterial(undefined)}>
             <ChevronLeft size={15} /> 返回列表
           </button>
-          <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onDeleted={handleDeleted} onSuccess={onSuccess} />
+          <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} topics={topics} onChanged={onChanged} onDeleted={handleDeleted} onSuccess={onSuccess} />
         </div>
       </section>
     );
@@ -1474,7 +1575,7 @@ function WorkspaceView({
               />
             </div>
             {!isMobile && (
-              <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onDeleted={handleDeleted} onSuccess={onSuccess} />
+              <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} topics={topics} onChanged={onChanged} onDeleted={handleDeleted} onSuccess={onSuccess} />
             )}
           </div>
         </div>
@@ -1520,7 +1621,7 @@ function WorkspaceView({
             />
           </div>
           {!isMobile && (
-            <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} onChanged={onChanged} onDeleted={handleDeleted} onSuccess={onSuccess} />
+            <MaterialDetailPanel material={detail} tagGroups={detailTagGroups} topics={topics} onChanged={onChanged} onDeleted={handleDeleted} onSuccess={onSuccess} />
           )}
         </div>
       )}
@@ -1549,12 +1650,14 @@ function RequiredLabel({ children, required }: { children: React.ReactNode; requ
 function MaterialDetailPanel({
   material,
   tagGroups,
+  topics,
   onChanged,
   onDeleted,
   onSuccess,
 }: {
   material?: Material;
   tagGroups: TagGroup[];
+  topics: Topic[];
   onChanged: () => void;
   onDeleted: (id: number) => void;
   onSuccess: NotifySuccess;
@@ -1567,6 +1670,8 @@ function MaterialDetailPanel({
   const [message, setMessage] = useState('');
   const [collectOpen, setCollectOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [moveTopicOpen, setMoveTopicOpen] = useState(false);
+  const [moveTopicId, setMoveTopicId] = useState<number>();
   const [collectScore, setCollectScore] = useState(8);
   const [collectComment, setCollectComment] = useState('');
   const [commentPreview, setCommentPreview] = useState(false);
@@ -1607,6 +1712,8 @@ function MaterialDetailPanel({
     setHistoryOpen(true);
     setCollectScore(material.score ?? 8);
     setCollectComment(material.comment ?? '');
+    setMoveTopicOpen(false);
+    setMoveTopicId(undefined);
     setTagSelection(material.tags.filter((tag) => tag.tagType !== 'SYSTEM'));
   }, [material?.id]);
 
@@ -1734,6 +1841,27 @@ function MaterialDetailPanel({
     },
   });
 
+
+  const moveTopicMutation = useMutation({
+    mutationFn: async () => {
+      if (!material) throw new Error('未选择资料');
+      if (!moveTopicId) throw new Error('请选择目标主题');
+      if (moveTopicId === material.topicId) throw new Error('目标主题不能和当前主题相同');
+      await workspaceApi.moveMaterialToTopicInbox(material.id, moveTopicId);
+    },
+    onSuccess: () => {
+      setMoveTopicOpen(false);
+      onSuccess('资料已移动到目标主题收件箱');
+      void queryClient.invalidateQueries();
+      onChanged();
+    },
+    onError: (error) => {
+      const text = errorMessage(error);
+      setMessage(text);
+      showToast('error', `更换主题失败：${text}`);
+    },
+  });
+
   const historyEntries = material ? buildMaterialHistory(material) : [];
 
   if (!material) {
@@ -1780,12 +1908,19 @@ function MaterialDetailPanel({
     tagGroups.filter((group) => group.required && selectedTagValues(group).length === 0);
 
   const selectedTags = editing ? tagSelection : material.tags;
+  const availableTopics = topics.filter((topic) => topic.id !== material.topicId);
 
   const handleCollect = () => {
     setMessage('');
     setCollectScore(Number(form.score ?? material?.score ?? 8));
     setCollectComment(String(form.comment ?? material?.comment ?? ''));
     setCollectOpen(true);
+  };
+
+  const handleMoveTopic = () => {
+    setMessage('');
+    setMoveTopicId(availableTopics[0]?.id);
+    setMoveTopicOpen(true);
   };
 
   return (
@@ -1949,13 +2084,14 @@ function MaterialDetailPanel({
                             key={tag.id}
                             className={`tag-option ${activeValues.includes(tag.value) ? 'selected' : ''}`}
                             style={tagStyle(group)}
+                            data-tag-tooltip={tagTooltip(group)}
                             onClick={() => toggleTag(group, tag)}
                           >
                             <span className="tag-hash">#</span>{tag.value}
                           </button>
                         ))
                       : activeValues.map((value) => (
-                          <span className="tag-chip" style={tagStyle(group)} key={value}>
+                          <span className="tag-chip" style={tagStyle(group)} data-tag-tooltip={tagTooltip(group)} key={value}>
                             <span className="tag-hash">#</span>{value}
                           </span>
                         ))}
@@ -1995,10 +2131,15 @@ function MaterialDetailPanel({
         )}
 
         {!editing && (
-          <div className="filter-row wrap">
+          <div className="filter-row wrap detail-action-row">
             {(material.status === 'INBOX' || material.status === 'PENDING_REVIEW') && (
               <button className="btn compact primary" onClick={handleCollect}>
                 <Check size={15} /> 收录
+              </button>
+            )}
+            {material.status !== 'INVALID' && (
+              <button className="btn compact" onClick={handleMoveTopic} disabled={availableTopics.length === 0}>
+                <MoveRight size={15} /> 更换主题
               </button>
             )}
             {material.status === 'COLLECTED' && (
@@ -2037,6 +2178,37 @@ function MaterialDetailPanel({
             <X size={18} />
           </button>
           <img className="image-preview-full" src={displayCoverUrl} alt={material.title} />
+        </div>
+      </div>
+    )}
+    {moveTopicOpen && (
+      <div className="modal-backdrop">
+        <div className="modal collect-modal" role="dialog" aria-modal="true" aria-labelledby="moveTopicTitle">
+          <div className="settings-head" style={{ paddingBottom: 0, borderBottom: 0 }}>
+            <div>
+              <h2 id="moveTopicTitle">更换资料主题</h2>
+              <p className="subtitle">资料将进入目标主题的收件箱；原有标签会被清空，评分、评语和元数据会保留。</p>
+            </div>
+            <button type="button" className="btn compact ghost" onClick={() => setMoveTopicOpen(false)}>
+              <X size={16} />
+            </button>
+          </div>
+          <label className="form-row">
+            <span className="field-label">目标主题</span>
+            <select className="select" value={moveTopicId ?? ''} onChange={(event) => setMoveTopicId(Number(event.target.value))}>
+              {availableTopics.length === 0 ? (
+                <option value="">暂无其他主题</option>
+              ) : availableTopics.map((topic) => (
+                <option key={topic.id} value={topic.id}>{topic.name}</option>
+              ))}
+            </select>
+          </label>
+          <div className="modal-actions">
+            <button type="button" className="btn ghost" onClick={() => setMoveTopicOpen(false)}>取消</button>
+            <button type="button" className="btn primary" disabled={moveTopicMutation.isPending || !moveTopicId} onClick={() => moveTopicMutation.mutate()}>
+              {moveTopicMutation.isPending ? '移动中...' : '确认移动'}
+            </button>
+          </div>
         </div>
       </div>
     )}
@@ -2128,6 +2300,7 @@ function MaterialDetailPanel({
                           type="button"
                           className={`tag-option ${activeValues.includes(tag.value) ? 'selected' : ''}`}
                           style={tagStyle(group)}
+                            data-tag-tooltip={tagTooltip(group)}
                           onClick={() => toggleTag(group, tag)}
                         >
                           <span className="tag-hash">#</span>{tag.value}
@@ -2522,6 +2695,29 @@ function CaptureModal({
   );
 }
 
+const recommendedTagGroupColors = [
+  { name: '松石', color: '#0f766e' },
+  { name: '孔雀蓝', color: '#0e7490' },
+  { name: '深天蓝', color: '#0369a1' },
+  { name: '钴蓝', color: '#2563eb' },
+  { name: '靛蓝', color: '#4f46e5' },
+  { name: '紫罗兰', color: '#7c3aed' },
+  { name: '葡萄紫', color: '#6b21a8' },
+  { name: '洋红', color: '#c026d3' },
+  { name: '玫红', color: '#be123c' },
+  { name: '酒红', color: '#9f1239' },
+  { name: '砖红', color: '#991b1b' },
+  { name: '朱砂', color: '#c2410c' },
+  { name: '琥珀', color: '#b45309' },
+  { name: '橄榄', color: '#a16207' },
+  { name: '苔绿', color: '#4d7c0f' },
+  { name: '森林绿', color: '#15803d' },
+  { name: '翡翠', color: '#047857' },
+  { name: '深海', color: '#155e75' },
+  { name: '岩灰', color: '#475569' },
+  { name: '墨色', color: '#0f172a' },
+];
+
 type SettingsModal =
   | { type: 'topic'; mode: 'create' }
   | { type: 'topic'; mode: 'edit'; topic: Topic }
@@ -2769,6 +2965,10 @@ function SettingsModalView({
     setForm((current) => ({ ...current, [field]: value }));
   };
 
+  const selectRecommendedColor = (color: string) => {
+    setForm((current) => ({ ...current, color }));
+  };
+
   return (
     <div className="modal-backdrop">
       <form className="modal" onSubmit={submit}>
@@ -2800,6 +3000,34 @@ function SettingsModalView({
                     <strong>{form.color}</strong>
                   </div>
                 </label>
+                <div className="tag-color-presets">
+                  <span className="field-label">推荐色号</span>
+                  <div className="tag-color-preset-list">
+                    {recommendedTagGroupColors.map((preset) => {
+                      const active = form.color.toLowerCase() === preset.color.toLowerCase();
+                      return (
+                        <button
+                          key={preset.color}
+                          type="button"
+                          className={`tag-color-preset ${active ? 'active' : ''}`}
+                          style={{
+                            color: preset.color,
+                            borderColor: active ? preset.color : `color-mix(in srgb, ${preset.color}, transparent 68%)`,
+                            background: active
+                              ? `color-mix(in srgb, ${preset.color}, transparent 84%)`
+                              : `color-mix(in srgb, ${preset.color}, transparent 94%)`,
+                          }}
+                          onClick={() => selectRecommendedColor(preset.color)}
+                          title={`${preset.name} ${preset.color}`}
+                          aria-label={`选择推荐色号 ${preset.name}`}
+                        >
+                          <span className="tag-color-dot" style={{ backgroundColor: preset.color }} />
+                          <span>{preset.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <div className="form-inline">
                   <label className="filter-row">
                     <input type="checkbox" checked={form.exclusive} onChange={update('exclusive')} /> 单选组
@@ -2900,10 +3128,12 @@ function XmindStatsDashboard({
   topics,
   topicCounts,
   onOpenTagFilter,
+  onOpenTopicLibrary,
 }: {
   topics: Topic[];
   topicCounts: Record<number, TopicSidebarCount>;
   onOpenTagFilter: (target: StatsTreeTagFilterTarget) => void;
+  onOpenTopicLibrary: (topicId: number) => void;
 }) {
   const totalStats = useMemo(
     () => topics.reduce(
@@ -2982,7 +3212,7 @@ function XmindStatsDashboard({
         </div>
 
         <Suspense fallback={<div className="stats-d3-tree-shell stats-d3-tree-loading">正在生成统计图...</div>}>
-          <StatsTreeMap data={statsTreeData} topicCount={topics.length} onOpenTagFilter={onOpenTagFilter} />
+          <StatsTreeMap data={statsTreeData} topicCount={topics.length} onOpenTagFilter={onOpenTagFilter} onOpenTopicLibrary={onOpenTopicLibrary} />
         </Suspense>
       </div>
     </section>

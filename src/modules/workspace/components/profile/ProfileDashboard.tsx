@@ -42,11 +42,15 @@ function MetricCard({ label, value }: { label: string; value: string | number })
 export function ProfileDashboard({
   topics,
   topicCounts,
+  mascotEnabled,
+  onMascotEnabledChange,
   onLogout,
   onSuccess,
 }: {
   topics: Topic[];
   topicCounts: Record<number, TopicSidebarCount>;
+  mascotEnabled: boolean;
+  onMascotEnabledChange: (enabled: boolean) => void;
   onLogout: () => void;
   onSuccess: (text: string) => void;
 }) {
@@ -270,6 +274,20 @@ export function ProfileDashboard({
               <button type="button" className={interfaceStyle === 'classic' ? 'active' : ''} onClick={() => changeInterfaceStyle('classic')}>标准</button>
               <button type="button" className={interfaceStyle === 'glass' ? 'active' : ''} onClick={() => changeInterfaceStyle('glass')}>通透</button>
               <button type="button" className={interfaceStyle === 'anime' ? 'active' : ''} onClick={() => changeInterfaceStyle('anime')}>二次元</button>
+            </div>
+            <div className="profile-preference-row">
+              <div>
+                <strong>沐沐助手</strong>
+                <span>显示桌面上的沐沐看板助手。</span>
+              </div>
+              <button
+                type="button"
+                className={`switch-control ${mascotEnabled ? 'active' : ''}`}
+                aria-pressed={mascotEnabled}
+                onClick={() => onMascotEnabledChange(!mascotEnabled)}
+              >
+                <span />
+              </button>
             </div>
             <div className="theme-control-grid">
               <label className="form-row">

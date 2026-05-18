@@ -50,7 +50,11 @@ export function tagStyle(group?: TagGroup) {
 }
 
 export function groupForTag(tag: MaterialTag, groups: TagGroup[]) {
-  return groups.find((group) => String(group.id) === tag.tagGroupKey);
+  return groups.find((group) => String(group.id) === tag.tagGroupKey || group.tagGroupKey === tag.tagGroupKey);
+}
+
+export function tagTooltip(group?: TagGroup) {
+  return group?.name ?? '未知';
 }
 
 export function materialTagsForGroups(material: Material, groups: TagGroup[]) {

@@ -358,6 +358,13 @@ export const workspaceApi = {
     return api.put(`/api/v1/materials/${id}/tags`, { tags }).then(() => undefined);
   },
 
+  moveMaterialToTopicInbox(id: number, targetTopicId: number): Promise<void> {
+    if (shouldUseMockApi()) {
+      return mockRepository.moveMaterialToTopicInbox(id, targetTopicId).then(() => undefined);
+    }
+    return api.post(`/api/v1/materials/${id}/move-topic`, { targetTopicId }).then(() => undefined);
+  },
+
   markRead(id: number): Promise<void> {
     if (shouldUseMockApi()) {
       return mockRepository.getMaterial(id).then((material) => {

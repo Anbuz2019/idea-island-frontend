@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { materialTypeLabels } from '../../../../shared/utils/format';
 import type { MaterialSortBy, MaterialType, TagGroup } from '../../types';
-import { tagStyle } from '../../utils/materialView';
+import { tagStyle, tagTooltip } from '../../utils/materialView';
 import { readWorkspacePrefs, saveWorkspacePrefs } from '../../utils/workspacePrefs';
 
 const materialTypes: MaterialType[] = ['article', 'social', 'media', 'image', 'excerpt', 'input'];
@@ -91,7 +91,7 @@ export function FilterPanel({
           <div className="filter-active-tags">
             {activeTagChips.length > 0 ? (
               activeTagChips.map(({ key, value, group }) => (
-                <span key={key} className="tag-chip" style={tagStyle(group)}>
+                <span key={key} className="tag-chip" style={tagStyle(group)} data-tag-tooltip={tagTooltip(group)}>
                   <span className="tag-hash">#</span>{value}
                 </span>
               ))
@@ -143,7 +143,7 @@ export function FilterPanel({
             ) : (
               tagGroups.flatMap((group) =>
                 (tagFilters[String(group.id)] ?? []).map((value) => (
-                  <span key={`${group.id}-${value}`} className="tag-chip" style={tagStyle(group)}>
+                  <span key={`${group.id}-${value}`} className="tag-chip" style={tagStyle(group)} data-tag-tooltip={tagTooltip(group)}>
                     <span className="tag-hash">#</span>{value}
                   </span>
                 )),
@@ -168,6 +168,7 @@ export function FilterPanel({
                           key={tag.id}
                           className={`tag-option ${selected ? 'selected' : ''}`}
                           style={tagStyle(group)}
+                          data-tag-tooltip={tagTooltip(group)}
                           onClick={() => toggleTag(group, tag.value)}
                         >
                           <span className="tag-hash">#</span>{tag.value}

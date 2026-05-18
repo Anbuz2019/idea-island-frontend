@@ -21,6 +21,8 @@ export type StatsTreeNode = {
   attributes: {
     kind: StatsTreeKind;
     count: number;
+    topicId?: number;
+    childCount?: number;
     color?: string;
     nodeKey?: string;
   };
@@ -43,7 +45,7 @@ export function buildStatsTreeData({
 }): StatsTreeNode {
   return {
     name: '资料沉淀',
-    attributes: { kind: 'root', count: total },
+    attributes: { kind: 'root', count: total, nodeKey: 'root', childCount: topics.length },
     children: topics.map((topic) => {
       const groups = topicTagGroups[topic.id] ?? [];
       return {
@@ -51,6 +53,9 @@ export function buildStatsTreeData({
         attributes: {
           kind: 'topic',
           count: topicCounts[topic.id]?.library ?? 0,
+          topicId: topic.id,
+          nodeKey: `topic:${topic.id}`,
+          childCount: groups.length,
         },
         children: groups.map((group) => {
           const groupKey = group.tagGroupKey ?? String(group.id);
@@ -64,7 +69,7 @@ export function buildStatsTreeData({
               kind: 'group',
               count: groupCount,
               color: group.color,
-              nodeKey: `${topic.id}:${group.id}`,
+              nodeKey: `topic:${topic.id}:group:${group.id}`,
             },
             inlineTags: group.values.map((tag) => ({
               id: tag.id,

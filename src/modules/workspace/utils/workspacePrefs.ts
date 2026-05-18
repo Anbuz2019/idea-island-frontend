@@ -19,8 +19,11 @@ export type WorkspacePrefs = {
   selectedMaterialId?: number;
   topicNavCollapsed?: boolean;
   interfaceStyle?: InterfaceStyle;
+  mascotEnabled?: boolean;
   filterPanelCollapsed?: Record<string, boolean>;
   filters?: Record<string, WorkspaceFilterPrefs>;
+  statsTreeExpandedNodeKeys?: string[];
+  statsTreeExpandedInlineGroupKeys?: string[];
 };
 
 export function readWorkspacePrefs(): WorkspacePrefs {
@@ -50,6 +53,15 @@ export function readInterfaceStyle(): InterfaceStyle {
   return saved === 'glass' || saved === 'classic' || saved === 'anime' ? saved : 'classic';
 }
 
+export function readMascotEnabled() {
+  const saved = readWorkspacePrefs().mascotEnabled;
+  return typeof saved === 'boolean' ? saved : true;
+}
+
+export function saveMascotEnabled(value: boolean) {
+  saveWorkspacePrefs((current) => ({ ...current, mascotEnabled: value }));
+  return value;
+}
 export function applyInterfaceStyle(value: InterfaceStyle) {
   if (typeof document !== 'undefined') {
     document.documentElement.dataset.style = value;
